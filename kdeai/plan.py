@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
 import json
+import os
 import sqlite3
+import sys
 import tempfile
 
 import polib
@@ -154,6 +156,53 @@ def _marker_settings_from_config(config: Mapping[str, object]) -> tuple[list[str
         if ordered:
             return kdeapply.DEFAULT_MARKER_FLAGS, ordered, ai_flag
     return kdeapply.DEFAULT_MARKER_FLAGS, kdeapply.DEFAULT_COMMENT_PREFIXES, ai_flag
+
+
+def _review_prefix_from_config(config: Mapping[str, object]) -> str:
+    markers = config.get("markers") if isinstance(config, Mapping) else None
+    if isinstance(markers, Mapping):
+        comment_prefixes = markers.get("comment_prefixes")
+        if isinstance(comment_prefixes, Mapping):
+            value = comment_prefixes.get("review")
+            if value:
+                return str(value)
+    return "KDEAI-REVIEW:"
+
+
+def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
+    if not text:
+        return []
+    lines = [line.rstrip("\n") for line in text.replace("\r\n", "\n").split("\n")]
+    selected = []
+    for line in lines:
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                selected.append(line)
+                break
+    return selected
+
+
+def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
+    lines = _tool_comment_lines(entry.tcomment, [review_prefix])
+    return bool(lines)
+
+
+def _has_non_empty_translation(entry: polib.POEntry) -> bool:
+    if entry.msgid_plural:
+        return any(str(value).strip() for value in entry.msgstr_plural.values())
+    return (entry.msgstr or "").strip() != ""
+
+
+def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> bool:
+    if overwrite == "conservative":
+        return not current_non_empty and not reviewed
+    if overwrite == "allow-nonempty":
+        return not reviewed
+    if overwrite == "allow-reviewed":
+        return not reviewed or (reviewed and not current_non_empty)
+    if overwrite == "all":
+        return True
+    raise ValueError(f"unsupported overwrite mode: {overwrite}")
 
 
 def _examples_settings(config: Mapping[str, object]) -> tuple[list[str], int, str]:
@@ -491,11 +540,13 @@ def build_plan(
     cache: str = "on",
     examples_mode: str | None = None,
     glossary_mode: str | None = None,
+    overwrite: str | None = None,
     session_tm: Mapping[object, object] | None = None,
     embedder: EmbeddingFunc | None = None,
     sqlite_vector_path: str | None = None,
 ) -> dict:
     marker_flags, comment_prefixes, ai_flag = _marker_settings_from_config(config)
+    review_prefix = _review_prefix_from_config(config)
     assets = _build_assets(
         project_root=project_root,
         project_id=project_id,
@@ -511,6 +562,11 @@ def build_plan(
     )
 
     files_payload: list[dict] = []
+    apply_cfg = config.get("apply") if isinstance(config, Mapping) else None
+    if not isinstance(apply_cfg, Mapping):
+        apply_cfg = {}
+    selected_overwrite = str(overwrite or apply_cfg.get("overwrite_default", "conservative"))
+    debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
     project_meta = _read_json(
         project_root / ".kdeai" / "project.json",
         "project.json",
@@ -528,9 +584,19 @@ def build_plan(
 
         po_file = _load_po_from_bytes(locked.bytes)
         entries_payload: list[dict] = []
+        total_entries = 0
+        skipped_overwrite = 0
+        tm_entries = 0
+        llm_entries = 0
 
         for entry in po_file:
             if entry.obsolete or entry.msgid == "":
+                continue
+            total_entries += 1
+            current_non_empty = _has_non_empty_translation(entry)
+            reviewed = _is_reviewed(entry, review_prefix)
+            if not _can_overwrite(current_non_empty, reviewed, selected_overwrite):
+                skipped_overwrite += 1
                 continue
             msgctxt = entry.msgctxt or ""
             msgid = entry.msgid
@@ -567,6 +633,7 @@ def build_plan(
                         "tm_scope": tm_candidate.scope,
                     }
                 )
+                tm_entries += 1
                 continue
 
             source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
@@ -600,6 +667,18 @@ def build_plan(
                     "action": "llm",
                     "prompt": prompt_payload,
                 }
+            )
+            llm_entries += 1
+
+        if debug_enabled:
+            print(
+                "[kdeai][debug] plan",
+                relpath,
+                f"total_entries={total_entries}",
+                f"skipped_overwrite={skipped_overwrite}",
+                f"tm_entries={tm_entries}",
+                f"llm_entries={llm_entries}",
+                file=sys.stderr,
             )
 
         files_payload.append(

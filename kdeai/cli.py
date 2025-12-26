@@ -10,6 +10,7 @@ import tempfile
 import portalocker
 import polib
 import typer
+import click
 
 from kdeai import apply as kdeapply
 from kdeai import config as kdeconfig
@@ -323,7 +324,7 @@ def plan(
     examples: Optional[ExamplesMode] = typer.Option(None, "--examples"),
     glossary: Optional[ExamplesMode] = typer.Option(None, "--glossary"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     project = _load_project(project_root)
     config = kdeconfig.load_config_from_root(project_root)
@@ -356,7 +357,7 @@ def apply(
     overwrite: Optional[OverwriteMode] = typer.Option(None, "--overwrite"),
     post_index: OnOff = typer.Option("off", "--post-index"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     plan = kdeplan.load_plan(plan_path)
     post_index_flag = post_index == "on"
@@ -434,7 +435,7 @@ def translate(
                     return True
         return False
 
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     project = _load_project(project_root)
     config = kdeconfig.load_config_from_root(project_root)
@@ -460,6 +461,7 @@ def translate(
             cache=cache_mode,
             examples_mode=examples,
             glossary_mode=glossary,
+            overwrite=overwrite,
         )
 
         # Phase 2: inference without holding any file locks.
@@ -508,7 +510,7 @@ def index(
     paths: Optional[list[Path]] = typer.Argument(None),
     strict: bool = typer.Option(False, "--strict"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     project = _load_project(project_root)
     config = kdeconfig.load_config_from_root(project_root)
@@ -569,7 +571,7 @@ def reference_build(
     paths: Optional[list[Path]] = typer.Argument(None),
     label: Optional[str] = typer.Option(None, "--label"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
         project = _load_project(project_root)
@@ -608,7 +610,7 @@ def examples_build(
     lang: str = typer.Option(..., "--lang"),
     skip_if_current: bool = typer.Option(False, "--skip-if-current"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
         project = _load_project(project_root)
@@ -747,7 +749,7 @@ def examples_build(
 def glossary_build(
     skip_if_current: bool = typer.Option(False, "--skip-if-current"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
         project = _load_project(project_root)
@@ -823,7 +825,7 @@ def glossary_build(
 def doctor(
     repair_cache: bool = typer.Option(False, "--repair-cache"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     report = kdedoctor.run_doctor(project_root, repair_cache=repair_cache)
     for note in report.notes:
@@ -841,7 +843,7 @@ def doctor(
 def gc(
     ttl_days: int = typer.Option(30, "--ttl-days"),
 ) -> None:
-    ctx = typer.get_current_context()
+    ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
         project = _load_project(project_root)
