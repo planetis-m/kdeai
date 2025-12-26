@@ -414,7 +414,7 @@ def apply_plan(
             errors.append("plan marker_flags must be a list")
         else:
             normalized = [str(flag) for flag in plan_marker_flags]
-            if normalized != list(marker_flags):
+            if sorted(normalized) != sorted(marker_flags):
                 errors.append("plan marker_flags do not match config")
 
     plan_comment_prefixes = plan.get("comment_prefixes")
@@ -423,7 +423,7 @@ def apply_plan(
             errors.append("plan comment_prefixes must be a list")
         else:
             normalized = [str(prefix) for prefix in plan_comment_prefixes]
-            if normalized != list(comment_prefixes):
+            if sorted(normalized) != sorted(comment_prefixes):
                 errors.append("plan comment_prefixes do not match config")
 
     plan_ai_flag = plan.get("ai_flag")

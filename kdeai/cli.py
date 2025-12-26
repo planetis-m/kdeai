@@ -180,13 +180,19 @@ def _resolve_planner_inputs(
 ) -> tuple[ExamplesMode, GlossaryMode, kdeexamples.EmbeddingFunc | None, str | None]:
     resolved_examples_mode = _examples_mode_from_config(config, examples)
     resolved_glossary_mode = _glossary_mode_from_config(config, glossary)
+    if cache_mode == "off" and (
+        resolved_examples_mode == "required" or resolved_glossary_mode == "required"
+    ):
+        raise ValueError("cache=off cannot be combined with required examples/glossary")
     if cache_mode == "off":
         return "off", "off", None, None
     embedder = _maybe_embedder(
         resolved_examples_mode,
         _examples_embed_policy(config),
     )
-    sqlite_vector_path = _sqlite_vector_path(project_root)
+    sqlite_vector_path = (
+        None if resolved_examples_mode == "off" else _sqlite_vector_path(project_root)
+    )
     return resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path
 
 
@@ -203,8 +209,8 @@ def _build_plan_header(
         "project_id": str(project.project_data["project_id"]),
         "config_hash": config.config_hash,
         "lang": lang,
-        "marker_flags": list(builder.marker_flags),
-        "comment_prefixes": list(builder.comment_prefixes),
+        "marker_flags": sorted(builder.marker_flags),
+        "comment_prefixes": sorted(builder.comment_prefixes),
         "ai_flag": builder.ai_flag,
         "placeholder_patterns": list(config.apply.validation_patterns),
         "apply_defaults": {
@@ -291,15 +297,19 @@ def plan(
     cache_write_flag = cache_write or "on"
     if cache_write_flag == "off":
         typer.secho("Note: plan never writes cache; --cache-write has no effect.", err=True)
-    resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
-        _resolve_planner_inputs(
-            cache_mode=cache_mode,
-            examples=examples,
-            glossary=glossary,
-            config=config,
-            project_root=project_root,
+    try:
+        resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
+            _resolve_planner_inputs(
+                cache_mode=cache_mode,
+                examples=examples,
+                glossary=glossary,
+                config=config,
+                project_root=project_root,
+            )
         )
-    )
+    except ValueError as exc:
+        typer.secho(str(exc), err=True)
+        raise typer.Exit(1)
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
@@ -315,6 +325,7 @@ def plan(
     )
 
     files_payload: list[dict] = []
+    plan_payload: dict | None = None
     try:
         for path in _iter_po_paths(project_root, paths):
             file_draft = kdeplan.generate_plan_for_file(
@@ -327,19 +338,21 @@ def plan(
                 run_llm=False,
             )
             files_payload.append(file_draft)
+        files_payload.sort(key=lambda item: str(item.get("file_path", "")))
+        apply_cfg = _apply_defaults_from_config(config)
+        plan_payload = _build_plan_header(
+            project=project,
+            config=config,
+            lang=lang,
+            builder=builder,
+            apply_defaults=apply_cfg,
+        )
+        plan_payload["files"] = files_payload
     finally:
         builder.close()
 
-    files_payload.sort(key=lambda item: str(item.get("file_path", "")))
-    apply_cfg = _apply_defaults_from_config(config)
-    plan_payload = _build_plan_header(
-        project=project,
-        config=config,
-        lang=lang,
-        builder=builder,
-        apply_defaults=apply_cfg,
-    )
-    plan_payload["files"] = files_payload
+    if plan_payload is None:
+        raise typer.Exit(1)
 
     if out is None:
         typer.echo(kdeplan.render_plan_json(plan_payload))
@@ -427,15 +440,19 @@ def translate(
     config = project.config
     cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
-    resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
-        _resolve_planner_inputs(
-            cache_mode=cache_mode,
-            examples=examples,
-            glossary=glossary,
-            config=config,
-            project_root=project_root,
+    try:
+        resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
+            _resolve_planner_inputs(
+                cache_mode=cache_mode,
+                examples=examples,
+                glossary=glossary,
+                config=config,
+                project_root=project_root,
+            )
         )
-    )
+    except ValueError as exc:
+        typer.secho(str(exc), err=True)
+        raise typer.Exit(1)
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(config)

@@ -526,11 +526,16 @@ def query_examples(
             embedding_dim=db.embedding_dim,
             require_finite=db.require_finite,
         )
-    db.conn.execute(
-        "SELECT vector_init('examples', 'embedding', ?)",
-        (f"type=FLOAT32,dimension={db.embedding_dim},distance={db.embedding_distance.upper()}",),
-    )
-    db.conn.execute("SELECT vector_quantize_preload('examples', 'embedding')")
+    try:
+        db.conn.execute(
+            "SELECT vector_init('examples', 'embedding', ?)",
+            (
+                f"type=FLOAT32,dimension={db.embedding_dim},distance={db.embedding_distance.upper()}",
+            ),
+        )
+        db.conn.execute("SELECT vector_quantize_preload('examples', 'embedding')")
+    except Exception as exc:
+        raise RuntimeError("sqlite-vector unavailable for examples") from exc
 
     review_statuses: list[str] | None = None
     allow_ai_generated: bool | None = None
