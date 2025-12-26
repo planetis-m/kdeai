@@ -237,6 +237,8 @@ def generate_plan_for_file(
     )
     locked = snapshot.locked_read_file(path, lock_path)
     po_file = po_utils.load_po_from_bytes(locked.bytes)
+    if po_file is None:
+        raise ValueError(f"Failed to parse PO file: {relpath}")
     file_draft = builder.build_draft(relpath, po_file)
     file_draft["base_sha256"] = locked.sha256
 

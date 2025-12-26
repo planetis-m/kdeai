@@ -344,12 +344,12 @@ def plan(
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
         apply_cfg = _apply_defaults_from_config(config)
-    plan_payload = _build_plan_header(
-        project=project,
-        lang=lang,
-        builder=builder,
-        apply_defaults=apply_cfg,
-    )
+        plan_payload = _build_plan_header(
+            project=project,
+            lang=lang,
+            builder=builder,
+            apply_defaults=apply_cfg,
+        )
         plan_payload["files"] = files_payload
     finally:
         builder.close()
