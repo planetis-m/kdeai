@@ -381,7 +381,7 @@ def apply_plan(
     apply_mode: str | None = None,
     overwrite: str | None = None,
     post_index: bool | None = None,
-    workspace_conn=None,
+    workspace_conn: sqlite3.Connection | None = None,
     session_tm: SessionTm | None = None,
 ) -> ApplyResult:
     project_meta = {}
