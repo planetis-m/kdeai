@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 import hashlib
-import json
 import os
 import sqlite3
 import tempfile
@@ -377,6 +376,8 @@ def apply_plan(
     plan: Mapping[str, object],
     *,
     project_root: Path,
+    project_id: str,
+    path_casefold: bool,
     config: Config,
     apply_mode: str | None = None,
     overwrite: str | None = None,
@@ -384,15 +385,6 @@ def apply_plan(
     workspace_conn: sqlite3.Connection | None = None,
     session_tm: SessionTm | None = None,
 ) -> ApplyResult:
-    project_meta = {}
-    project_path = project_root / ".kdeai" / "project.json"
-    if project_path.exists():
-        try:
-            project_meta = json.loads(project_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            project_meta = {}
-    path_casefold = bool(project_meta.get("path_casefold", os.name == "nt"))
-
     defaults = plan.get("apply_defaults") if isinstance(plan, Mapping) else None
     defaults = defaults if isinstance(defaults, Mapping) else {}
 
@@ -400,7 +392,8 @@ def apply_plan(
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
     post_index_flag = bool(post_index) and isinstance(workspace_conn, sqlite3.Connection)
 
-    project_id = str(plan.get("project_id", ""))
+    plan_project_id = str(plan.get("project_id", ""))
+    plan_config_hash = str(plan.get("config_hash", ""))
     lang = str(plan.get("lang", ""))
     marker_flags, comment_prefixes, review_prefix, ai_prefix, ai_flag = (
         _marker_settings_from_config(config)
@@ -408,6 +401,22 @@ def apply_plan(
     placeholder_patterns = plan.get("placeholder_patterns") or []
 
     errors: list[str] = []
+    if plan_project_id != project_id:
+        return ApplyResult(
+            [],
+            [],
+            0,
+            ["plan project_id does not match current project"],
+            [],
+        )
+    if not plan_config_hash or plan_config_hash != config.config_hash:
+        return ApplyResult(
+            [],
+            [],
+            0,
+            ["plan config_hash does not match current config"],
+            [],
+        )
     plan_marker_flags = plan.get("marker_flags")
     if plan_marker_flags is not None:
         if not isinstance(plan_marker_flags, (list, tuple)):

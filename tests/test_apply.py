@@ -7,6 +7,7 @@ import polib
 
 from conftest import build_config
 from kdeai import apply
+from kdeai import locks
 from kdeai import plan
 
 
@@ -36,10 +37,11 @@ class TestApplyStrictMode(unittest.TestCase):
             entry = po_file.find("File", msgctxt="menu")
             base_state_hash = apply.entry_state_hash(entry, lang="de")
 
+            config = build_config()
             plan_payload = {
                 "format": 1,
                 "project_id": "proj",
-                "config_hash": "cfg",
+                "config_hash": config.config_hash,
                 "lang": "de",
                 "apply_defaults": {
                     "mode": "strict",
@@ -66,7 +68,9 @@ class TestApplyStrictMode(unittest.TestCase):
             result = apply.apply_plan(
                 finalized_plan,
                 project_root=root,
-                config=build_config(),
+                project_id="proj",
+                path_casefold=False,
+                config=config,
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -106,10 +110,11 @@ class TestApplyStrictMode(unittest.TestCase):
             base_bytes = po_path.read_bytes()
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
 
+            config = build_config()
             plan_payload = {
                 "format": 1,
                 "project_id": "proj",
-                "config_hash": "cfg",
+                "config_hash": config.config_hash,
                 "lang": "de",
                 "apply_defaults": {
                     "mode": "strict",
@@ -136,7 +141,9 @@ class TestApplyStrictMode(unittest.TestCase):
             result = apply.apply_plan(
                 finalized_plan,
                 project_root=root,
-                config=build_config(),
+                project_id="proj",
+                path_casefold=False,
+                config=config,
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -175,12 +182,13 @@ class TestApplyAdditionalCases(unittest.TestCase):
         msgctxt: str,
         msgid: str,
         translation: dict,
+        config_hash: str,
         extra: dict | None = None,
     ) -> dict:
         plan_payload = {
             "format": 1,
             "project_id": "proj",
-            "config_hash": "cfg",
+            "config_hash": config_hash,
             "lang": "de",
             "apply_defaults": {
                 "mode": "strict",
@@ -219,6 +227,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
             base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
 
             plan_payload = self._build_plan(
                 file_path="locale/de.po",
@@ -227,6 +236,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 msgctxt="menu",
                 msgid="File",
                 translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
             )
 
             po_path.write_text(po_path.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
@@ -234,7 +244,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
-                config=build_config(),
+                project_id="proj",
+                path_casefold=False,
+                config=config,
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -256,10 +268,11 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_state_file = apply.entry_state_hash(entry_file, lang="de")
             base_state_edit = apply.entry_state_hash(entry_edit, lang="de")
 
+            config = build_config()
             plan_payload = {
                 "format": 1,
                 "project_id": "proj",
-                "config_hash": "cfg",
+                "config_hash": config.config_hash,
                 "lang": "de",
                 "apply_defaults": {"mode": "strict", "overwrite": "conservative", "post_index": "off"},
                 "files": [
@@ -293,7 +306,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
-                config=build_config(),
+                project_id="proj",
+                path_casefold=False,
+                config=config,
                 apply_mode="rebase",
                 overwrite="conservative",
             )
@@ -325,6 +340,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("Hello %s", msgctxt="menu")
             base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
 
             plan_payload = self._build_plan(
                 file_path="locale/de.po",
@@ -333,13 +349,16 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 msgctxt="menu",
                 msgid="Hello %s",
                 translation={"msgstr": "Hallo", "msgstr_plural": {}},
+                config_hash=config.config_hash,
                 extra={"placeholder_patterns": [r"%\w"]},
             )
 
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
-                config=build_config(),
+                project_id="proj",
+                path_casefold=False,
+                config=config,
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -362,10 +381,11 @@ class TestApplyAdditionalCases(unittest.TestCase):
             entry = po_file.find("File", msgctxt="menu")
             base_state_hash = apply.entry_state_hash(entry, lang="de")
 
+            config = build_config()
             plan_payload = {
                 "format": 1,
                 "project_id": "proj",
-                "config_hash": "cfg",
+                "config_hash": config.config_hash,
                 "lang": "de",
                 "apply_defaults": {"mode": "strict", "overwrite": "conservative", "post_index": "off"},
                 "files": [
@@ -396,7 +416,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
-                config=build_config(),
+                project_id="proj",
+                path_casefold=False,
+                config=config,
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -420,10 +442,11 @@ class TestApplyAdditionalCases(unittest.TestCase):
             entry = po_file.find("File", msgctxt="menu")
             base_state_hash = apply.entry_state_hash(entry, lang="de")
 
+            config = build_config()
             plan_payload = {
                 "format": 1,
                 "project_id": "proj",
-                "config_hash": "cfg",
+                "config_hash": config.config_hash,
                 "lang": "de",
                 "apply_defaults": {"mode": "strict", "overwrite": "conservative", "post_index": "off"},
                 "files": [
@@ -454,7 +477,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
-                config=build_config(),
+                project_id="proj",
+                path_casefold=False,
+                config=config,
                 apply_mode="rebase",
                 overwrite="conservative",
             )
@@ -477,6 +502,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
             base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
 
             plan_payload = self._build_plan(
                 file_path="locale/de.po",
@@ -485,16 +511,19 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 msgctxt="menu",
                 msgid="File",
                 translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
             )
 
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
+                project_id="proj",
+                path_casefold=False,
                 apply_mode="strict",
                 overwrite="conservative",
                 post_index=True,
                 workspace_conn=object(),
-                config=build_config({"tm": {"selection": {}}}),
+                config=config,
             )
 
             self.assertEqual(result.errors, [])
@@ -502,6 +531,156 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "Datei")
+
+    def test_apply_fails_on_project_id_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="other-proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertEqual(result.files_written, [])
+            self.assertEqual(result.entries_applied, 0)
+            self.assertTrue(result.errors)
+            self.assertIn("project_id", result.errors[0])
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(updated_entry.msgstr, "")
+
+    def test_apply_fails_on_config_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash="wrong-hash",
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertEqual(result.files_written, [])
+            self.assertEqual(result.entries_applied, 0)
+            self.assertEqual(result.errors, ["plan config_hash does not match current config"])
+            self.assertFalse((root / ".kdeai" / "locks").exists())
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(updated_entry.msgstr, "")
+
+    def test_apply_fails_on_missing_config_hash(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = {
+                "format": 1,
+                "project_id": "proj",
+                "lang": "de",
+                "apply_defaults": {
+                    "mode": "strict",
+                    "overwrite": "conservative",
+                    "post_index": "off",
+                },
+                "files": [
+                    {
+                        "file_path": "locale/de.po",
+                        "base_sha256": base_sha256,
+                        "entries": [
+                            {
+                                "msgctxt": "menu",
+                                "msgid": "File",
+                                "msgid_plural": "",
+                                "base_state_hash": base_state_hash,
+                                "translation": {"msgstr": "Datei", "msgstr_plural": {}},
+                            }
+                        ],
+                    }
+                ],
+            }
+            plan_payload = plan.finalize_plan(plan_payload)
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertEqual(result.files_written, [])
+            self.assertEqual(result.entries_applied, 0)
+            self.assertEqual(result.errors, ["plan config_hash does not match current config"])
+            self.assertFalse((root / ".kdeai" / "locks").exists())
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(updated_entry.msgstr, "")
+
+
+class TestLockId(unittest.TestCase):
+    def test_lock_id_varies_by_project(self):
+        lock_a = locks.lock_id("proj-a", "locale/de.po")
+        lock_b = locks.lock_id("proj-b", "locale/de.po")
+        self.assertNotEqual(lock_a, lock_b)
 
 
 if __name__ == "__main__":

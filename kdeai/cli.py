@@ -383,7 +383,8 @@ def apply(
         typer.secho(f"Apply failed: {exc}", err=True)
         raise typer.Exit(1)
 
-    project_id = str(plan.get("project_id") or project.project_data.get("project_id") or "")
+    project_id = str(project.project_data["project_id"])
+    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     if post_index_flag:
         try:
@@ -400,6 +401,8 @@ def apply(
     result = kdeapply.apply_plan(
         plan,
         project_root=project_root,
+        project_id=project_id,
+        path_casefold=path_casefold,
         config=config,
         apply_mode=apply_mode,
         overwrite=overwrite,
@@ -460,6 +463,7 @@ def translate(
     except ValueError as exc:
         typer.secho(str(exc), err=True)
         raise typer.Exit(1)
+    project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(config)
@@ -525,6 +529,8 @@ def translate(
             result = kdeapply.apply_plan(
                 per_file_plan,
                 project_root=project_root,
+                project_id=project_id,
+                path_casefold=path_casefold,
                 config=config,
                 apply_mode=apply_mode,
                 overwrite=overwrite,
