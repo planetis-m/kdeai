@@ -7,6 +7,7 @@ import sqlite3
 
 from kdeai import hash as kdehash
 from kdeai.config import Config
+from kdeai.tm_types import SessionTmView
 
 DEFAULT_LOOKUP_SCOPES = ["session", "workspace", "reference"]
 
@@ -91,7 +92,7 @@ def _candidate_from_session(
 
 
 def _lookup_session(
-    session_tm: Mapping[object, object] | None,
+    session_tm: SessionTmView | None,
     source_key: str,
     lang: str,
 ) -> TmCandidate | None:
@@ -179,7 +180,7 @@ def lookup_tm_exact(
     has_plural: bool,
     config: Config | None = None,
     lookup_scopes: Iterable[str] | None = None,
-    session_tm: Mapping[object, object] | None = None,
+    session_tm: SessionTmView | None = None,
     workspace_conn: sqlite3.Connection | None = None,
     reference_conn: sqlite3.Connection | None = None,
 ) -> TmCandidate | None:

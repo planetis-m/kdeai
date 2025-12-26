@@ -257,7 +257,8 @@ Any change to these fields makes existing examples DBs **incompatible** and ther
     "tagging": {
       "tm_copy": { "add_flags": ["fuzzy"], "add_ai_flag": false, "comment_prefix_key": "tm" },
       "llm":     { "add_flags": ["fuzzy"], "add_ai_flag": true,  "comment_prefix_key": "ai" }
-    }
+    },
+    "validation_patterns": []
   },
 
   "sqlite": {

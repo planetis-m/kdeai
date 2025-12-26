@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping
+from typing import Iterable, Mapping
 import hashlib
 import json
 import os
+import sqlite3
 import tempfile
 
 import polib
@@ -18,6 +19,7 @@ from kdeai.config import Config
 from kdeai import snapshot
 from kdeai import validate
 from kdeai import workspace_tm
+from kdeai.tm_types import SessionTm
 
 DEFAULT_COMMENT_PREFIXES = po_utils.DEFAULT_COMMENT_PREFIXES
 DEFAULT_MARKER_FLAGS = po_utils.DEFAULT_MARKER_FLAGS
@@ -190,7 +192,6 @@ def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> b
 
 
 def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
-    has_plural = bool(entry.msgid_plural)
     non_empty = po_utils.has_non_empty_translation(entry)
     if not non_empty:
         return "unreviewed"
@@ -210,7 +211,7 @@ def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) 
 
 
 def _update_session_tm(
-    session_tm: MutableMapping[object, object],
+    session_tm: SessionTm,
     *,
     entries: Iterable[polib.POEntry],
     lang: str,
@@ -381,7 +382,7 @@ def apply_plan(
     overwrite: str | None = None,
     post_index: bool | None = None,
     workspace_conn=None,
-    session_tm: MutableMapping[object, object] | None = None,
+    session_tm: SessionTm | None = None,
 ) -> ApplyResult:
     project_meta = {}
     project_path = project_root / ".kdeai" / "project.json"
@@ -397,7 +398,7 @@ def apply_plan(
 
     selected_mode = str(apply_mode or defaults.get("mode") or "strict")
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
-    post_index_flag = bool(post_index) and workspace_conn is not None
+    post_index_flag = bool(post_index) and isinstance(workspace_conn, sqlite3.Connection)
 
     project_id = str(plan.get("project_id", ""))
     lang = str(plan.get("lang", ""))

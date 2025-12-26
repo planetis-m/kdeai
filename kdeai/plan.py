@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, MutableMapping, Optional, Sequence, TYPE_CHECKING
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -21,8 +22,10 @@ from kdeai import po_model
 from kdeai import prompt as kdeprompt
 from kdeai import retrieve_tm
 from kdeai import snapshot
+from kdeai.tm_types import SessionTmView
 
 PLAN_FORMAT_VERSION = 1
+logger = logging.getLogger(__name__)
 
 
 EmbeddingFunc = Callable[[Sequence[str]], Sequence[Sequence[float]]]
@@ -58,7 +61,7 @@ class PlanBuilder:
         examples_mode: str | None = None,
         glossary_mode: str | None = None,
         overwrite: str | None = None,
-        session_tm: Mapping[object, object] | None = None,
+        session_tm: SessionTmView | None = None,
         embedder: EmbeddingFunc | None = None,
         sqlite_vector_path: str | None = None,
     ) -> None:
@@ -371,7 +374,8 @@ def _open_workspace_tm(
             expected_config_hash=config_hash,
             expected_kind="workspace_tm",
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("Workspace TM validation failed: %s", exc)
         conn.close()
         return None
     return conn
@@ -388,7 +392,8 @@ def _open_reference_tm(
         return None
     try:
         pointer = _read_json(pointer_path, "reference.current.json")
-    except Exception:
+    except Exception as exc:
+        logger.debug("Reference pointer read failed: %s", exc)
         return None
     db_file = pointer.get("db_file")
     if not db_file:
@@ -404,7 +409,8 @@ def _open_reference_tm(
             expected_config_hash=config_hash,
             expected_kind="reference_tm",
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("Reference TM validation failed: %s", exc)
         conn.close()
         return None
     return conn
@@ -440,7 +446,8 @@ def _open_examples_db(
         return None
     try:
         pointer = _read_json(pointer_path, f"examples {scope} pointer")
-    except Exception:
+    except Exception as exc:
+        logger.debug("Examples pointer read failed: %s", exc)
         return None
     db_file = pointer.get("db_file")
     if not db_file:
@@ -455,7 +462,8 @@ def _open_examples_db(
             config_hash=config_hash,
             embed_policy_hash=embed_policy_hash,
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("Examples DB open failed: %s", exc)
         return None
 
 
@@ -471,7 +479,8 @@ def _open_glossary_db(
         return None
     try:
         pointer = _read_json(pointer_path, "glossary.current.json")
-    except Exception:
+    except Exception as exc:
+        logger.debug("Glossary pointer read failed: %s", exc)
         return None
     db_file = pointer.get("db_file")
     if not db_file:
@@ -488,7 +497,8 @@ def _open_glossary_db(
             expected_kind="glossary",
             expected_normalization_id=normalization_id,
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("Glossary DB validation failed: %s", exc)
         conn.close()
         return None
     return conn
@@ -589,10 +599,10 @@ def _build_assets(
                 terms=glossary_terms, normalizer=normalizer
             )
         except Exception:
-            if glossary_mode == "required":
-                raise
             glossary_conn.close()
             glossary_conn = None
+            if glossary_mode == "required":
+                raise
             glossary_terms = []
             glossary_matcher = None
     elif glossary_mode == "required":

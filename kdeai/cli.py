@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, Literal, Sequence
-import json
 import os
 from datetime import datetime, timezone
 
@@ -11,7 +10,6 @@ import typer
 import click
 
 from kdeai import apply as kdeapply
-from kdeai import config as kdeconfig
 from kdeai.config import Config, EmbeddingPolicy
 from kdeai import db as kdedb
 from kdeai import doctor as kdedoctor
@@ -288,6 +286,9 @@ def plan(
     project = Project.load(project_root)
     config = project.config
     cache_mode = cache or "on"
+    cache_write_flag = cache_write or "on"
+    if cache_write_flag == "off":
+        typer.secho("Note: plan never writes cache; --cache-write has no effect.", err=True)
     resolved_examples_mode = _examples_mode_from_config(config, examples)
     embedder = _maybe_embedder(
         resolved_examples_mode,
@@ -517,6 +518,10 @@ def translate(
             if result.errors:
                 for error in result.errors:
                     typer.secho(error, err=True)
+                if out is not None:
+                    combined_plan = dict(plan_header)
+                    combined_plan["files"] = files_payload
+                    kdeplan.write_plan(out, combined_plan)
                 raise typer.Exit(1)
 
             if result.warnings:
@@ -549,12 +554,12 @@ def index(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = _load_project(project_root)
-    config = kdeconfig.load_config_from_root(project_root)
+    project = Project.load(project_root)
+    config = project.config
 
     errors: list[str] = []
-    project_id = str(project["project_id"])
-    path_casefold = bool(project.get("path_casefold"))
+    project_id = str(project.project_data["project_id"])
+    path_casefold = bool(project.project_data.get("path_casefold"))
     conn = _ensure_workspace_db(
         project_root,
         project_id=project_id,
@@ -611,12 +616,12 @@ def reference_build(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = _load_project(project_root)
-        config = kdeconfig.load_config_from_root(project_root)
+        project = Project.load(project_root)
+        config = project.config
         snapshot = kderef.build_reference_snapshot(
             project_root,
-            project_id=str(project["project_id"]),
-            path_casefold=bool(project.get("path_casefold")),
+            project_id=str(project.project_data["project_id"]),
+            path_casefold=bool(project.project_data.get("path_casefold")),
             config=config,
             config_hash=config.config_hash,
             paths=paths,
@@ -650,8 +655,8 @@ def examples_build(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = _load_project(project_root)
-        config = kdeconfig.load_config_from_root(project_root)
+        project = Project.load(project_root)
+        config = project.config
     except Exception as exc:
         typer.secho(f"Examples build failed: {exc}", err=True)
         raise typer.Exit(1)
@@ -682,7 +687,7 @@ def examples_build(
                 if db_path.exists():
                     db = kdeexamples.open_examples_db(
                         db_path,
-                        project_id=str(project["project_id"]),
+                        project_id=str(project.project_data["project_id"]),
                         config_hash=config.config_hash,
                         embed_policy_hash=config.embed_policy_hash,
                     )
@@ -706,7 +711,7 @@ def examples_build(
         if from_scope == "workspace":
             conn = _ensure_workspace_db(
                 project_root,
-                project_id=str(project["project_id"]),
+                project_id=str(project.project_data["project_id"]),
                 config_hash=config.config_hash,
                 config=config,
             )
@@ -716,7 +721,7 @@ def examples_build(
                     output_path=output_path,
                     lang=target_lang,
                     config=config,
-                    project_id=str(project["project_id"]),
+                    project_id=str(project.project_data["project_id"]),
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
                     embedder=embedder,
@@ -744,7 +749,7 @@ def examples_build(
                     output_path=output_path,
                     lang=target_lang,
                     config=config,
-                    project_id=str(project["project_id"]),
+                    project_id=str(project.project_data["project_id"]),
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
                     embedder=embedder,
@@ -758,7 +763,7 @@ def examples_build(
 
         meta_db = kdeexamples.open_examples_db(
             output_path,
-            project_id=str(project["project_id"]),
+            project_id=str(project.project_data["project_id"]),
             config_hash=config.config_hash,
             embed_policy_hash=config.embed_policy_hash,
         )
@@ -789,8 +794,8 @@ def glossary_build(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = _load_project(project_root)
-        config = kdeconfig.load_config_from_root(project_root)
+        project = Project.load(project_root)
+        config = project.config
     except Exception as exc:
         typer.secho(f"Glossary build failed: {exc}", err=True)
         raise typer.Exit(1)
@@ -805,7 +810,7 @@ def glossary_build(
             conn = kdedb.connect_readonly(db_path)
             kdedb.validate_meta_table(
                 conn,
-                expected_project_id=str(project["project_id"]),
+                expected_project_id=str(project.project_data["project_id"]),
                 expected_config_hash=config.config_hash,
                 expected_kind="glossary",
                 expected_normalization_id=_glossary_normalization_id(config),
@@ -839,7 +844,7 @@ def glossary_build(
             reference_conn,
             output_path=output_path,
             config=config,
-            project_id=str(project["project_id"]),
+            project_id=str(project.project_data["project_id"]),
             config_hash=config.config_hash,
         )
     finally:
@@ -883,11 +888,11 @@ def gc(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = _load_project(project_root)
-        config = kdeconfig.load_config_from_root(project_root)
+        project = Project.load(project_root)
+        config = project.config
         report = kdegc.gc_workspace_tm(
             project_root,
-            project_id=str(project["project_id"]),
+            project_id=str(project.project_data["project_id"]),
             config_hash=config.config_hash,
             config=config,
             ttl_days=ttl_days,
