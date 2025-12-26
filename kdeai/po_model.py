@@ -20,6 +20,8 @@ class PoUnit:
     msgstr_plural: Mapping[str, str]
     source_key: str
     source_text: str
+    flags: list[str]
+    tcomment: str
 
 
 def _normalize_field(value: str | None) -> str:
@@ -53,6 +55,8 @@ def _po_entry_to_unit(entry: polib.POEntry) -> PoUnit:
     msgid_plural = _normalize_field(entry.msgid_plural)
     msgstr = entry.msgstr or ""
     msgstr_plural = {str(k): str(v) for k, v in entry.msgstr_plural.items()}
+    flags = [str(flag) for flag in entry.flags]
+    tcomment = _normalize_field(entry.tcomment)
     return PoUnit(
         msgctxt=msgctxt,
         msgid=msgid,
@@ -61,6 +65,8 @@ def _po_entry_to_unit(entry: polib.POEntry) -> PoUnit:
         msgstr_plural=msgstr_plural,
         source_key=source_key_for(msgctxt, msgid, msgid_plural),
         source_text=source_text_v1(msgctxt, msgid, msgid_plural),
+        flags=flags,
+        tcomment=tcomment,
     )
 
 

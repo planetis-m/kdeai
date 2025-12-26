@@ -10,6 +10,9 @@ from kdeai import po_model
 
 DEFAULT_REVIEW_STATUS_ORDER = ["reviewed", "draft", "needs_review", "unreviewed"]
 DEFAULT_PREFER_HUMAN = True
+DEFAULT_REVIEW_PREFIX = "KDEAI-REVIEW:"
+DEFAULT_AI_PREFIX = "KDEAI-AI:"
+DEFAULT_AI_FLAG = "kdeai-ai"
 
 
 def _selection_settings(config: Config | None) -> tuple[list[str], bool]:
@@ -19,14 +22,56 @@ def _selection_settings(config: Config | None) -> tuple[list[str], bool]:
     return list(selection.review_status_order), bool(selection.prefer_human)
 
 
-def _derive_review_status(msgstr: str, msgstr_plural: Mapping[str, str], has_plural: bool) -> str:
+def _marker_settings_from_config(config: Config | None) -> tuple[str, str, str]:
+    if config is None:
+        return DEFAULT_REVIEW_PREFIX, DEFAULT_AI_PREFIX, DEFAULT_AI_FLAG
+    prefixes = config.markers.comment_prefixes
+    return prefixes.review, prefixes.ai, config.markers.ai_flag
+
+
+def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
+    if not text:
+        return []
+    lines = [line.rstrip("\n") for line in text.replace("\r\n", "\n").split("\n")]
+    selected = []
+    for line in lines:
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                selected.append(line)
+                break
+    return selected
+
+
+def _derive_review_status(
+    msgstr: str,
+    msgstr_plural: Mapping[str, str],
+    has_plural: bool,
+    flags: Sequence[str],
+    tcomment: str,
+    review_prefix: str,
+) -> str:
     if has_plural:
         if any(str(value).strip() for value in msgstr_plural.values()):
-            return "draft"
+            non_empty = True
+        else:
+            non_empty = False
+    else:
+        non_empty = msgstr.strip() != ""
+    if not non_empty:
         return "unreviewed"
-    if msgstr.strip() == "":
-        return "unreviewed"
+    if "fuzzy" in flags:
+        return "needs_review"
+    if _tool_comment_lines(tcomment, [review_prefix]):
+        return "reviewed"
     return "draft"
+
+
+def _derive_is_ai_generated(flags: Sequence[str], tcomment: str, ai_flag: str, ai_prefix: str) -> int:
+    if ai_flag in flags:
+        return 1
+    if _tool_comment_lines(tcomment, [ai_prefix]):
+        return 1
+    return 0
 
 
 def _selection_key(
@@ -138,6 +183,7 @@ def index_file_snapshot_tm(
     """Index one PO snapshot into the workspace TM in a single transaction."""
     units = po_model.parse_po_bytes(bytes)
     review_status_order, prefer_human = _selection_settings(config)
+    review_prefix, ai_prefix, ai_flag = _marker_settings_from_config(config)
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -181,7 +227,15 @@ def index_file_snapshot_tm(
 
             msgstr_plural_json = kdehash.canonical_msgstr_plural(unit.msgstr_plural)
             has_plural = unit.msgid_plural != ""
-            review_status = _derive_review_status(unit.msgstr, unit.msgstr_plural, has_plural)
+            review_status = _derive_review_status(
+                unit.msgstr,
+                unit.msgstr_plural,
+                has_plural,
+                unit.flags,
+                unit.tcomment,
+                review_prefix,
+            )
+            is_ai_generated = _derive_is_ai_generated(unit.flags, unit.tcomment, ai_flag, ai_prefix)
             translation_hash = kdehash.translation_hash(
                 unit.source_key,
                 lang,
@@ -196,7 +250,7 @@ def index_file_snapshot_tm(
                     unit.msgstr,
                     msgstr_plural_json,
                     review_status,
-                    0,
+                    is_ai_generated,
                     translation_hash,
                 )
             )

@@ -909,6 +909,7 @@ def build_plan(
         "marker_flags": list(marker_flags),
         "comment_prefixes": list(comment_prefixes),
         "ai_flag": ai_flag,
+        "placeholder_patterns": list(config.apply.validation_patterns),
         "apply_defaults": {},
         "files": files_payload,
     }

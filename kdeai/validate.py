@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Pattern
 
 
 class NonEmptyValidator:
@@ -15,7 +15,7 @@ class NonEmptyValidator:
         msgstr: str,
         msgstr_plural: Mapping[str, str],
         plural_forms: str | None,
-        placeholder_patterns: Iterable[str],
+        placeholder_patterns: Iterable[str | Pattern[str]],
     ) -> str | None:
         _ = msgid, plural_forms, placeholder_patterns
         if msgid_plural:
@@ -50,7 +50,7 @@ class PluralConsistencyValidator:
         msgstr: str,
         msgstr_plural: Mapping[str, str],
         plural_forms: str | None,
-        placeholder_patterns: Iterable[str],
+        placeholder_patterns: Iterable[str | Pattern[str]],
     ) -> str | None:
         _ = msgid, msgstr, placeholder_patterns
         if not msgid_plural:
@@ -89,14 +89,17 @@ class TagIntegrityValidator:
         msgstr: str,
         msgstr_plural: Mapping[str, str],
         plural_forms: str | None,
-        placeholder_patterns: Iterable[str],
+        placeholder_patterns: Iterable[str | Pattern[str]],
     ) -> str | None:
         _ = plural_forms
         if not placeholder_patterns:
             return None
         plural = bool(msgid_plural)
         for raw_pattern in placeholder_patterns:
-            compiled = re.compile(str(raw_pattern))
+            if isinstance(raw_pattern, re.Pattern):
+                compiled = raw_pattern
+            else:
+                compiled = re.compile(str(raw_pattern))
             if plural:
                 for key in sorted(msgstr_plural.keys(), key=_plural_key_sorter):
                     source_text = msgid if str(key) == "0" else msgid_plural
@@ -113,13 +116,13 @@ class TagIntegrityValidator:
 
 
 def validate_entry(
-    *,
-    msgid: str,
-    msgid_plural: str,
-    msgstr: str,
-    msgstr_plural: Mapping[str, str],
-    plural_forms: str | None,
-    placeholder_patterns: Iterable[str],
+        *,
+        msgid: str,
+        msgid_plural: str,
+        msgstr: str,
+        msgstr_plural: Mapping[str, str],
+        plural_forms: str | None,
+        placeholder_patterns: Iterable[str | Pattern[str]],
 ) -> list[str]:
     validators = [
         NonEmptyValidator(),

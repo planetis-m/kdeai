@@ -91,6 +91,7 @@ class ApplyConfig(_BaseModel):
     mode_default: StrictStr
     overwrite_default: StrictStr
     tagging: ApplyTagging
+    validation_patterns: list[StrictStr] = Field(default_factory=list)
 
 
 class CommentPrefixes(_BaseModel):
