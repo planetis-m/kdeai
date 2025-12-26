@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 import hashlib
 import os
@@ -248,6 +248,8 @@ def apply_plan_to_file(
     placeholder_patterns: Iterable[str],
     review_prefix: str = "KDEAI-REVIEW:",
 ) -> ApplyFileResult:
+    tool_prefixes = [str(prefix) for prefix in comment_prefixes]
+    tool_prefix_set = set(tool_prefixes)
     if overwrite_policy not in ALLOWED_OVERWRITE_POLICIES:
         return ApplyFileResult(
             file_path,
@@ -265,12 +267,22 @@ def apply_plan_to_file(
     po_file = _load_po_from_bytes(phase_a.bytes)
     entry_map = {_entry_key(entry): entry for entry in po_file if entry.msgid != "" and not entry.obsolete}
 
-    to_apply: list[tuple[Mapping[str, object], polib.POEntry]] = []
+    to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     mismatch = False
+    file_warnings: list[str] = []
     for entry_item in plan_items:
         if not isinstance(entry_item, Mapping):
             mismatch = True
             break
+        action = str(entry_item.get("action", ""))
+        if action == "needs_llm":
+            continue
+        if action not in {"copy_tm", "llm"}:
+            if action:
+                file_warnings.append(f"unsupported action: {action}")
+            else:
+                file_warnings.append("unsupported action: missing")
+            continue
         key = (
             str(entry_item.get("msgctxt", "")),
             str(entry_item.get("msgid", "")),
@@ -289,7 +301,7 @@ def apply_plan_to_file(
                 mismatch = True
                 break
             continue
-        to_apply.append((entry_item, entry))
+        to_apply.append((entry_item, entry, action))
 
     if mismatch:
         return ApplyFileResult(file_path, False, True, 0, [], [], [])
@@ -297,19 +309,21 @@ def apply_plan_to_file(
     file_errors: list[str] = []
     applied_entries: list[polib.POEntry] = []
     applied_in_file = 0
-    for entry_item, entry in to_apply:
+    for entry_item, entry, action in to_apply:
         current_non_empty = _has_non_empty_translation(entry)
         reviewed = _is_reviewed(entry, review_prefix)
         if not _can_overwrite(current_non_empty, reviewed, overwrite_policy):
             continue
 
         translation = entry_item.get("translation") if isinstance(entry_item, Mapping) else None
-        if isinstance(translation, Mapping):
-            msgstr = str(translation.get("msgstr", ""))
-            msgstr_plural = translation.get("msgstr_plural", {})
-            if not isinstance(msgstr_plural, Mapping):
-                msgstr_plural = {}
-            _set_translation(entry, msgstr=msgstr, msgstr_plural=msgstr_plural)
+        if not isinstance(translation, Mapping):
+            file_errors.append("plan entry missing translation for action")
+            break
+        msgstr = str(translation.get("msgstr", ""))
+        msgstr_plural = translation.get("msgstr_plural", {})
+        if not isinstance(msgstr_plural, Mapping):
+            msgstr_plural = {}
+        _set_translation(entry, msgstr=msgstr, msgstr_plural=msgstr_plural)
 
         flags = entry_item.get("flags") if isinstance(entry_item, Mapping) else None
         if isinstance(flags, Mapping):
@@ -322,7 +336,24 @@ def apply_plan_to_file(
             remove_prefixes = comments.get("remove_prefixes", [])
             ensure_lines = comments.get("ensure_lines", [])
             append = str(comments.get("append", ""))
-            _apply_comments(entry, remove_prefixes, ensure_lines, append)
+            if not isinstance(remove_prefixes, (list, tuple)):
+                file_errors.append("plan comments remove_prefixes must be a list")
+                break
+            if not isinstance(ensure_lines, (list, tuple)):
+                file_errors.append("plan comments ensure_lines must be a list")
+                break
+            normalized_remove = [str(prefix) for prefix in remove_prefixes]
+            if any(prefix not in tool_prefix_set for prefix in normalized_remove):
+                file_errors.append("plan comments remove_prefixes must use tool prefixes")
+                break
+            normalized_ensure = [str(line) for line in ensure_lines]
+            if any(
+                not any(line.startswith(prefix) for prefix in tool_prefixes)
+                for line in normalized_ensure
+            ):
+                file_errors.append("plan comments ensure_lines must use tool prefixes")
+                break
+            _apply_comments(entry, normalized_remove, normalized_ensure, append)
 
         plural_forms = po_file.metadata.get("Plural-Forms")
         validation_errors = validate.validate_entry(
@@ -341,35 +372,43 @@ def apply_plan_to_file(
         applied_entries.append(entry)
 
     if file_errors:
-        return ApplyFileResult(file_path, False, True, 0, file_errors, [], [])
+        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
 
     if applied_in_file == 0:
-        return ApplyFileResult(file_path, False, True, 0, [], [], [])
+        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     new_bytes = _serialize_po(po_file)
 
-    with locks.acquire_file_lock(lock_path):
-        current_bytes = full_path.read_bytes()
-        current_sha = hashlib.sha256(current_bytes).hexdigest()
-        if current_sha != phase_a.sha256:
-            return ApplyFileResult(file_path, False, True, 0, [], [], [])
-        if mode == "strict" and current_sha != base_sha256:
-            return ApplyFileResult(file_path, False, True, 0, [], [], [])
-        tmp_handle = tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=str(full_path.parent),
-            delete=False,
-        )
-        try:
-            tmp_handle.write(new_bytes)
-            tmp_handle.flush()
-            os.fsync(tmp_handle.fileno())
-            tmp_name = tmp_handle.name
-        finally:
-            tmp_handle.close()
-        os.replace(tmp_name, full_path)
+    tmp_handle = tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=str(full_path.parent),
+        delete=False,
+    )
+    try:
+        tmp_handle.write(new_bytes)
+        tmp_handle.flush()
+        os.fsync(tmp_handle.fileno())
+        tmp_name = tmp_handle.name
+    finally:
+        tmp_handle.close()
 
-    return ApplyFileResult(file_path, True, False, applied_in_file, [], [], applied_entries)
+    try:
+        with locks.acquire_file_lock(lock_path):
+            current_bytes = full_path.read_bytes()
+            current_sha = hashlib.sha256(current_bytes).hexdigest()
+            if current_sha != phase_a.sha256:
+                os.unlink(tmp_name)
+                return ApplyFileResult(file_path, False, True, 0, [], [], [])
+            if mode == "strict" and current_sha != base_sha256:
+                os.unlink(tmp_name)
+                return ApplyFileResult(file_path, False, True, 0, [], [], [])
+            os.replace(tmp_name, full_path)
+    except Exception:
+        if Path(tmp_name).exists():
+            os.unlink(tmp_name)
+        raise
+
+    return ApplyFileResult(file_path, True, False, applied_in_file, [], file_warnings, applied_entries)
 
 
 def apply_plan(
@@ -398,7 +437,7 @@ def apply_plan(
     marker_flags, comment_prefixes, review_prefix, ai_prefix, ai_flag = (
         _marker_settings_from_config(config)
     )
-    placeholder_patterns = plan.get("placeholder_patterns") or []
+    placeholder_patterns = list(config.apply.validation_patterns)
 
     errors: list[str] = []
     if plan_project_id != project_id:
@@ -439,6 +478,15 @@ def apply_plan(
     if plan_ai_flag is not None and str(plan_ai_flag) != ai_flag:
         errors.append("plan ai_flag does not match config")
 
+    plan_placeholder_patterns = plan.get("placeholder_patterns")
+    if plan_placeholder_patterns is not None:
+        if not isinstance(plan_placeholder_patterns, (list, tuple)):
+            errors.append("plan placeholder_patterns must be a list")
+        else:
+            normalized = [str(pattern) for pattern in plan_placeholder_patterns]
+            if normalized != placeholder_patterns:
+                errors.append("plan placeholder_patterns do not match config")
+
     files_written: list[str] = []
     files_skipped: list[str] = []
     warnings: list[str] = []
@@ -450,7 +498,33 @@ def apply_plan(
     if errors:
         return ApplyResult(files_written, files_skipped, entries_applied, errors, warnings)
 
-    for file_item in files:
+    files_list = list(files)
+    project_root_resolved = project_root.resolve()
+    path_errors: list[str] = []
+    for file_item in files_list:
+        if not isinstance(file_item, Mapping):
+            continue
+        file_path = str(file_item.get("file_path", ""))
+        if not file_path:
+            path_errors.append("plan file_path is invalid: empty")
+            continue
+        if "\\" in file_path:
+            path_errors.append(f"plan file_path is invalid: {file_path}")
+            continue
+        if Path(file_path).is_absolute():
+            path_errors.append(f"plan file_path is invalid: {file_path}")
+            continue
+        if ".." in PurePosixPath(file_path).parts:
+            path_errors.append(f"plan file_path is invalid: {file_path}")
+            continue
+        full_path = (project_root / file_path).resolve()
+        if not full_path.is_relative_to(project_root_resolved):
+            path_errors.append(f"plan file_path is invalid: {file_path}")
+
+    if path_errors:
+        return ApplyResult(files_written, files_skipped, entries_applied, path_errors, warnings)
+
+    for file_item in files_list:
         if not isinstance(file_item, Mapping):
             continue
         file_path = str(file_item.get("file_path", ""))
@@ -462,7 +536,7 @@ def apply_plan(
             project_root,
             locks.lock_id(project_id, relpath_key),
         )
-        full_path = project_root / file_path
+        full_path = (project_root / file_path).resolve()
         file_result = apply_plan_to_file(
             file_path,
             entries,

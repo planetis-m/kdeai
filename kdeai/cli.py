@@ -696,6 +696,14 @@ def examples_build(
     else:
         languages = [lang]
 
+    sqlite_vector_path = _sqlite_vector_path(project_root)
+    if sqlite_vector_path is None:
+        typer.secho(
+            "Examples build failed: sqlite-vector extension not found at ./vector.so",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     for target_lang in languages:
         pointer_path = (
             project_root
@@ -751,6 +759,7 @@ def examples_build(
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
                     embedder=embedder,
+                    sqlite_vector_path=sqlite_vector_path,
                 )
             finally:
                 conn.close()
@@ -779,6 +788,7 @@ def examples_build(
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
                     embedder=embedder,
+                    sqlite_vector_path=sqlite_vector_path,
                 )
             finally:
                 reference_conn.close()

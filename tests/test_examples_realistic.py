@@ -159,6 +159,7 @@ def _build_examples_db_from_playground(tmp_path: Path) -> tuple[Path, po_model.P
         return [compute_embedding(text, policy=policy) for text in texts]
 
     output_path = tmp_path / "examples.sqlite"
+    sqlite_vector_path = str(project_root / "vector.so")
     examples.build_examples_db_from_workspace(
         conn,
         output_path=output_path,
@@ -168,6 +169,7 @@ def _build_examples_db_from_playground(tmp_path: Path) -> tuple[Path, po_model.P
         config_hash="test-config",
         embed_policy_hash="test-embed-policy",
         embedder=embedder,
+        sqlite_vector_path=sqlite_vector_path,
     )
     conn.close()
     return output_path, unit, config

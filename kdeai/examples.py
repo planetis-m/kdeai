@@ -280,6 +280,7 @@ def _build_examples_db(
     config_hash: str,
     embed_policy_hash: str,
     embedder: EmbeddingFunc,
+    sqlite_vector_path: str | None,
 ) -> Path:
     policy = config.prompt.examples.embedding_policy
     embedding_dim = int(policy.dim)
@@ -292,7 +293,7 @@ def _build_examples_db(
     if output_path.exists():
         output_path.unlink()
 
-    conn = kdedb.get_db_connection(output_path)
+    conn = sqlite3.connect(str(output_path))
     conn.executescript(kdedb.EXAMPLES_SCHEMA)
 
     include_file_sha256 = source_snapshot_kind == "reference_tm"
@@ -330,6 +331,17 @@ def _build_examples_db(
                 for row in payload
             ],
         )
+
+    if not sqlite_vector_path:
+        conn.close()
+        raise ValueError("sqlite-vector extension path is required to build examples")
+    try:
+        kdedb.enable_sqlite_vector(conn, extension_path=sqlite_vector_path)
+    except Exception as exc:
+        conn.close()
+        raise RuntimeError(
+            f"failed to load sqlite-vector extension at {sqlite_vector_path}: {exc}"
+        ) from exc
 
     _create_vector_index(
         conn,
@@ -378,6 +390,7 @@ def build_examples_db_from_workspace(
     config_hash: str,
     embed_policy_hash: str,
     embedder: EmbeddingFunc,
+    sqlite_vector_path: str | None,
 ) -> Path:
     meta = kdedb.read_meta(workspace_conn)
     kdedb.validate_meta(
@@ -399,6 +412,7 @@ def build_examples_db_from_workspace(
         config_hash=config_hash,
         embed_policy_hash=embed_policy_hash,
         embedder=embedder,
+        sqlite_vector_path=sqlite_vector_path,
     )
 
 
@@ -412,6 +426,7 @@ def build_examples_db_from_reference(
     config_hash: str,
     embed_policy_hash: str,
     embedder: EmbeddingFunc,
+    sqlite_vector_path: str | None,
 ) -> Path:
     meta = kdedb.read_meta(reference_conn)
     kdedb.validate_meta(
@@ -436,6 +451,7 @@ def build_examples_db_from_reference(
         config_hash=config_hash,
         embed_policy_hash=embed_policy_hash,
         embedder=embedder,
+        sqlite_vector_path=sqlite_vector_path,
     )
 
 
