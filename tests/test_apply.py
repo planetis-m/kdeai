@@ -66,6 +66,7 @@ class TestApplyStrictMode(unittest.TestCase):
             result = apply.apply_plan(
                 finalized_plan,
                 project_root=root,
+                config=build_config(),
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -135,6 +136,7 @@ class TestApplyStrictMode(unittest.TestCase):
             result = apply.apply_plan(
                 finalized_plan,
                 project_root=root,
+                config=build_config(),
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -232,6 +234,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
+                config=build_config(),
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -290,6 +293,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
+                config=build_config(),
                 apply_mode="rebase",
                 overwrite="conservative",
             )
@@ -335,6 +339,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
+                config=build_config(),
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -391,6 +396,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
+                config=build_config(),
                 apply_mode="strict",
                 overwrite="conservative",
             )
@@ -448,6 +454,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             result = apply.apply_plan(
                 plan_payload,
                 project_root=root,
+                config=build_config(),
                 apply_mode="rebase",
                 overwrite="conservative",
             )

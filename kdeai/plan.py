@@ -12,7 +12,7 @@ import tempfile
 import polib
 
 from kdeai import apply as kdeapply
-from kdeai.config import Config
+from kdeai.config import Config, ExamplesEligibility
 from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import hash as kdehash
@@ -52,8 +52,6 @@ class PlanBuilder:
         project_root: Path,
         project_id: str,
         config: Config,
-        config_hash: str,
-        embed_policy_hash: str,
         lang: str,
         cache: str = "on",
         examples_mode: str | None = None,
@@ -73,8 +71,6 @@ class PlanBuilder:
             project_root=project_root,
             project_id=project_id,
             config=config,
-            config_hash=config_hash,
-            embed_policy_hash=embed_policy_hash,
             lang=lang,
             cache=cache,
             examples_mode=examples_mode,
@@ -84,6 +80,12 @@ class PlanBuilder:
         )
         self.embedder = embedder
         self._debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
+
+    def _build_tm_tags_and_comments(
+        self,
+        tm_candidate: retrieve_tm.TmCandidate,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        return _tm_tags_and_comments(self.config, tm_candidate)
 
     def close(self) -> None:
         if self.assets.examples_db is not None:
@@ -134,6 +136,7 @@ class PlanBuilder:
                 reference_conn=self.assets.reference_conn,
             )
             if tm_candidate is not None:
+                flags, comments = self._build_tm_tags_and_comments(tm_candidate)
                 entries_payload.append(
                     {
                         "msgctxt": msgctxt,
@@ -145,6 +148,8 @@ class PlanBuilder:
                             "msgstr": tm_candidate.msgstr,
                             "msgstr_plural": tm_candidate.msgstr_plural,
                         },
+                        "flags": flags,
+                        "comments": comments,
                         "tm_scope": tm_candidate.scope,
                     }
                 )
@@ -158,6 +163,8 @@ class PlanBuilder:
                 source_text=source_text,
                 top_n=self.assets.examples_top_n,
                 lang=self.lang,
+                eligibility=self.config.prompt.examples.eligibility,
+                review_status_order=self.config.tm.selection.review_status_order,
             )
             glossary_matches = _collect_glossary(
                 matcher=self.assets.glossary_matcher,
@@ -344,6 +351,31 @@ def _review_prefix_from_config(config: Config) -> str:
     return config.markers.comment_prefixes.review
 
 
+def _tm_tags_and_comments(
+    config: Config,
+    tm_candidate: retrieve_tm.TmCandidate,
+) -> tuple[dict[str, object], dict[str, object]]:
+    tm_cfg = config.apply.tagging.tm_copy
+    add_flags = list(tm_cfg.add_flags)
+    add_ai_flag = bool(tm_cfg.add_ai_flag)
+    comment_prefix_key = str(tm_cfg.comment_prefix_key or "tm")
+    comment_prefixes = config.markers.comment_prefixes
+    comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.tm)
+    ai_flag = config.markers.ai_flag
+
+    if add_ai_flag:
+        add_flags.append(ai_flag)
+
+    ensured_line = f"{comment_prefix} copied_from={tm_candidate.scope}"
+    flags = {"add": add_flags, "remove": []}
+    comments = {
+        "remove_prefixes": [comment_prefix],
+        "ensure_lines": [ensured_line],
+        "append": "",
+    }
+    return flags, comments
+
+
 def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
     if not text:
         return []
@@ -404,11 +436,15 @@ def _open_workspace_tm(
     *,
     project_id: str,
     config_hash: str,
+    config: Config,
 ) -> sqlite3.Connection | None:
     db_path = project_root / ".kdeai" / "cache" / "workspace.tm.sqlite"
     if not db_path.exists():
         return None
     conn = kdedb.connect_readonly(db_path)
+    tm_sqlite = config.sqlite.workspace_tm
+    conn.execute(f"PRAGMA synchronous = {tm_sqlite.synchronous}")
+    conn.execute(f"PRAGMA busy_timeout = {int(tm_sqlite.busy_timeout_ms.read)}")
     try:
         kdedb.validate_meta_table(
             conn,
@@ -544,8 +580,6 @@ def _build_assets(
     project_root: Path,
     project_id: str,
     config: Config,
-    config_hash: str,
-    embed_policy_hash: str,
     lang: str,
     cache: str,
     examples_mode: str | None,
@@ -553,6 +587,8 @@ def _build_assets(
     embedder: EmbeddingFunc | None,
     sqlite_vector_path: str | None,
 ) -> PlannerAssets:
+    config_hash = config.config_hash
+    embed_policy_hash = config.embed_policy_hash
     if cache == "off":
         examples_mode = "off"
         glossary_mode = "off"
@@ -561,7 +597,7 @@ def _build_assets(
     reference_conn = None
     if cache != "off":
         workspace_conn = _open_workspace_tm(
-            project_root, project_id=project_id, config_hash=config_hash
+            project_root, project_id=project_id, config_hash=config_hash, config=config
         )
         reference_conn = _open_reference_tm(
             project_root, project_id=project_id, config_hash=config_hash
@@ -676,6 +712,8 @@ def _collect_examples(
     source_text: str,
     top_n: int,
     lang: str,
+    eligibility: ExamplesEligibility,
+    review_status_order: Sequence[str],
 ) -> list[kdeexamples.ExampleMatch]:
     if examples_db is None or embedder is None:
         return []
@@ -686,6 +724,8 @@ def _collect_examples(
             query_embedding=embedding,
             top_n=top_n,
             lang=lang,
+            eligibility=eligibility,
+            review_status_order=review_status_order,
         )
     except Exception:
         return []
@@ -707,8 +747,6 @@ def build_plan(
     project_root: Path,
     project_id: str,
     config: Config,
-    config_hash: str,
-    embed_policy_hash: str,
     lang: str,
     paths: Optional[list[Path]] = None,
     cache: str = "on",
@@ -725,8 +763,6 @@ def build_plan(
         project_root=project_root,
         project_id=project_id,
         config=config,
-        config_hash=config_hash,
-        embed_policy_hash=embed_policy_hash,
         lang=lang,
         cache=cache,
         examples_mode=examples_mode,
@@ -790,6 +826,7 @@ def build_plan(
                 reference_conn=assets.reference_conn,
             )
             if tm_candidate is not None:
+                flags, comments = _tm_tags_and_comments(config, tm_candidate)
                 entries_payload.append(
                     {
                         "msgctxt": msgctxt,
@@ -801,6 +838,8 @@ def build_plan(
                             "msgstr": tm_candidate.msgstr,
                             "msgstr_plural": tm_candidate.msgstr_plural,
                         },
+                        "flags": flags,
+                        "comments": comments,
                         "tm_scope": tm_candidate.scope,
                     }
                 )
@@ -814,6 +853,8 @@ def build_plan(
                 source_text=source_text,
                 top_n=assets.examples_top_n,
                 lang=lang,
+                eligibility=config.prompt.examples.eligibility,
+                review_status_order=config.tm.selection.review_status_order,
             )
             glossary_matches = _collect_glossary(
                 matcher=assets.glossary_matcher,
@@ -863,7 +904,7 @@ def build_plan(
     plan_payload = {
         "format": PLAN_FORMAT_VERSION,
         "project_id": project_id,
-        "config_hash": config_hash,
+        "config_hash": config.config_hash,
         "lang": lang,
         "marker_flags": list(marker_flags),
         "comment_prefixes": list(comment_prefixes),

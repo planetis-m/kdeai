@@ -11,7 +11,7 @@ import sqlite3
 import sys
 
 from kdeai import db as kdedb
-from kdeai.config import Config
+from kdeai.config import Config, ExamplesEligibility
 
 
 DEFAULT_MIN_REVIEW_STATUS = "reviewed"
@@ -463,10 +463,21 @@ def open_examples_db(
     )
 
 
-def _vector_query_sql(*, with_lang_filter: bool) -> str:
-    where_clause = ""
+def _vector_query_sql(
+    *,
+    with_lang_filter: bool,
+    review_statuses: Sequence[str] | None,
+    allow_ai_generated: bool | None,
+) -> str:
+    where_parts: list[str] = []
     if with_lang_filter:
-        where_clause = "WHERE e.lang = ?"
+        where_parts.append("e.lang = ?")
+    if review_statuses:
+        placeholders = ",".join(["?"] * len(review_statuses))
+        where_parts.append(f"e.review_status IN ({placeholders})")
+    if allow_ai_generated is False:
+        where_parts.append("e.is_ai_generated = 0")
+    where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
     return (
         "SELECT e.source_key, e.source_text, e.lang, e.msgstr, e.msgstr_plural, "
         "e.review_status, e.is_ai_generated, e.translation_hash, e.file_path, "
@@ -479,12 +490,26 @@ def _vector_query_sql(*, with_lang_filter: bool) -> str:
     )
 
 
+def _eligible_review_statuses(
+    eligibility: ExamplesEligibility,
+    review_status_order: Sequence[str],
+) -> list[str]:
+    min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
+    order = list(review_status_order)
+    if min_review_status not in order:
+        raise ValueError("min_review_status not present in tm.selection.review_status_order")
+    cutoff = order.index(min_review_status)
+    return order[: cutoff + 1]
+
+
 def query_examples(
     db: ExamplesDb,
     *,
     query_embedding: Sequence[float] | bytes,
     top_n: int,
     lang: str | None = None,
+    eligibility: ExamplesEligibility | None = None,
+    review_status_order: Sequence[str] | None = None,
 ) -> list[ExampleMatch]:
     if isinstance(query_embedding, (bytes, bytearray)):
         blob = bytes(query_embedding)
@@ -505,10 +530,24 @@ def query_examples(
     )
     db.conn.execute("SELECT vector_quantize_preload('examples', 'embedding')")
 
-    sql = _vector_query_sql(with_lang_filter=lang is not None)
+    review_statuses: list[str] | None = None
+    allow_ai_generated: bool | None = None
+    if eligibility is not None:
+        if review_status_order is None:
+            raise ValueError("review_status_order required when eligibility is provided")
+        review_statuses = _eligible_review_statuses(eligibility, review_status_order)
+        allow_ai_generated = bool(eligibility.allow_ai_generated)
+
+    sql = _vector_query_sql(
+        with_lang_filter=lang is not None,
+        review_statuses=review_statuses,
+        allow_ai_generated=allow_ai_generated,
+    )
     params: list[object] = [blob, int(top_n)]
     if lang is not None:
         params.append(lang)
+    if review_statuses:
+        params.extend(review_statuses)
 
     rows = db.conn.execute(sql, params).fetchall()
     matches: list[ExampleMatch] = []

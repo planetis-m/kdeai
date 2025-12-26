@@ -26,6 +26,12 @@ DEFAULT_COMMENT_PREFIXES = [
 
 DEFAULT_MARKER_FLAGS = ["fuzzy"]
 DEFAULT_AI_FLAG = "kdeai-ai"
+ALLOWED_OVERWRITE_POLICIES = {
+    "conservative",
+    "allow-nonempty",
+    "allow-reviewed",
+    "all",
+}
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,12 @@ def _entry_state_hash(
         marker_flags_present,
         tool_lines,
     )
+
+
+def _marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str, str, str]:
+    prefixes = config.markers.comment_prefixes
+    ordered = [prefixes.tool, prefixes.ai, prefixes.tm, prefixes.review]
+    return DEFAULT_MARKER_FLAGS, ordered, prefixes.review, prefixes.ai, config.markers.ai_flag
 
 
 def entry_state_hash(
@@ -244,6 +256,16 @@ def apply_plan_to_file(
     placeholder_patterns: Iterable[str],
     review_prefix: str = "KDEAI-REVIEW:",
 ) -> ApplyFileResult:
+    if overwrite_policy not in ALLOWED_OVERWRITE_POLICIES:
+        return ApplyFileResult(
+            file_path,
+            False,
+            True,
+            0,
+            [f"unsupported overwrite mode: {overwrite_policy}"],
+            [],
+            [],
+        )
     phase_a = snapshot.locked_read_file(full_path, lock_path)
     if mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
         return ApplyFileResult(file_path, False, True, 0, [], [], [])
@@ -362,12 +384,11 @@ def apply_plan(
     plan: Mapping[str, object],
     *,
     project_root: Path,
+    config: Config,
     apply_mode: str | None = None,
     overwrite: str | None = None,
     post_index: bool | None = None,
     workspace_conn=None,
-    config: Config | None = None,
-    session_tm: dict | None = None,
 ) -> ApplyResult:
     project_meta = {}
     project_path = project_root / ".kdeai" / "project.json"
@@ -383,26 +404,48 @@ def apply_plan(
 
     selected_mode = str(apply_mode or defaults.get("mode") or "strict")
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
-    _ = post_index, workspace_conn, config
+    _ = post_index, workspace_conn
 
     project_id = str(plan.get("project_id", ""))
     lang = str(plan.get("lang", ""))
-    marker_flags = plan.get("marker_flags") or DEFAULT_MARKER_FLAGS
-    comment_prefixes = plan.get("comment_prefixes") or DEFAULT_COMMENT_PREFIXES
+    marker_flags, comment_prefixes, review_prefix, ai_prefix, ai_flag = (
+        _marker_settings_from_config(config)
+    )
     placeholder_patterns = plan.get("placeholder_patterns") or []
-    review_prefix = "KDEAI-REVIEW:"
-    ai_prefix = "KDEAI-AI:"
-    ai_flag = str(plan.get("ai_flag") or DEFAULT_AI_FLAG)
+
+    errors: list[str] = []
+    plan_marker_flags = plan.get("marker_flags")
+    if plan_marker_flags is not None:
+        if not isinstance(plan_marker_flags, (list, tuple)):
+            errors.append("plan marker_flags must be a list")
+        else:
+            normalized = [str(flag) for flag in plan_marker_flags]
+            if normalized != list(marker_flags):
+                errors.append("plan marker_flags do not match config")
+
+    plan_comment_prefixes = plan.get("comment_prefixes")
+    if plan_comment_prefixes is not None:
+        if not isinstance(plan_comment_prefixes, (list, tuple)):
+            errors.append("plan comment_prefixes must be a list")
+        else:
+            normalized = [str(prefix) for prefix in plan_comment_prefixes]
+            if normalized != list(comment_prefixes):
+                errors.append("plan comment_prefixes do not match config")
+
+    plan_ai_flag = plan.get("ai_flag")
+    if plan_ai_flag is not None and str(plan_ai_flag) != ai_flag:
+        errors.append("plan ai_flag does not match config")
 
     files_written: list[str] = []
     files_skipped: list[str] = []
-    errors: list[str] = []
     warnings: list[str] = []
     entries_applied = 0
 
     files = plan.get("files") if isinstance(plan, Mapping) else None
     if not isinstance(files, Iterable):
         return ApplyResult(files_written, files_skipped, entries_applied, ["invalid plan files"], warnings)
+    if errors:
+        return ApplyResult(files_written, files_skipped, entries_applied, errors, warnings)
 
     for file_item in files:
         if not isinstance(file_item, Mapping):
@@ -446,16 +489,5 @@ def apply_plan(
         if file_result.wrote:
             files_written.append(file_path)
             entries_applied += file_result.entries_applied
-
-        if session_tm is not None:
-            for entry in file_result.applied_entries:
-                source_key = po_model.source_key_for(entry.msgctxt, entry.msgid, entry.msgid_plural)
-                msgstr_plural = {str(k): str(v) for k, v in entry.msgstr_plural.items()}
-                session_tm[(source_key, lang)] = {
-                    "msgstr": entry.msgstr or "",
-                    "msgstr_plural": msgstr_plural,
-                    "review_status": _derive_review_status(entry, review_prefix),
-                    "is_ai_generated": _derive_is_ai_generated(entry, ai_flag, ai_prefix),
-                }
 
     return ApplyResult(files_written, files_skipped, entries_applied, errors, warnings)

@@ -363,8 +363,6 @@ def plan(
         project_root=project_root,
         project_id=str(project.project_data["project_id"]),
         config=config,
-        config_hash=config.config_hash,
-        embed_policy_hash=config.embed_policy_hash,
         lang=lang,
         cache=cache_mode,
         examples_mode=examples,
@@ -425,124 +423,74 @@ def apply(
     plan = kdeplan.load_plan(plan_path)
     post_index_flag = post_index == "on"
     workspace_conn = None
-    config = None
+    try:
+        project = _load_project(project_root)
+        config = kdeconfig.load_config_from_root(project_root)
+    except Exception as exc:
+        typer.secho(f"Apply failed: {exc}", err=True)
+        raise typer.Exit(1)
 
-    project = _load_project(project_root)
     project_id = str(plan.get("project_id") or project.get("project_id") or "")
-    path_casefold = bool(project.get("path_casefold", os.name == "nt"))
 
     if post_index_flag:
         try:
-            config = kdeconfig.load_config_from_root(project_root)
+            workspace_conn = _ensure_workspace_db(
+                project_root,
+                project_id=project_id,
+                config_hash=config.config_hash,
+                config=config,
+            )
         except Exception as exc:
             typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
             post_index_flag = False
-        else:
+
+    result = kdeapply.apply_plan(
+        plan,
+        project_root=project_root,
+        config=config,
+        apply_mode=apply_mode,
+        overwrite=overwrite,
+        post_index=post_index_flag,
+        workspace_conn=workspace_conn,
+    )
+
+    post_index_warnings: list[str] = []
+    lang = str(plan.get("lang", ""))
+    if post_index_flag and workspace_conn is not None:
+        for file_path in result.files_written:
             try:
-                workspace_conn = _ensure_workspace_db(
-                    project_root,
-                    project_id=str(project["project_id"]),
-                    config_hash=config.config_hash,
+                full_path = project_root / file_path
+                data = full_path.read_bytes()
+                sha256_hex = hashlib.sha256(data).hexdigest()
+                stat = full_path.stat()
+                workspace_tm.index_file_snapshot_tm(
+                    workspace_conn,
+                    file_path=file_path,
+                    lang=lang,
+                    bytes=data,
+                    sha256=sha256_hex,
+                    mtime_ns=stat.st_mtime_ns,
+                    size=stat.st_size,
                     config=config,
                 )
             except Exception as exc:
-                typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
-                post_index_flag = False
-
-    defaults = plan.get("apply_defaults") if isinstance(plan, dict) else None
-    defaults = defaults if isinstance(defaults, dict) else {}
-    selected_mode = str(apply_mode or defaults.get("mode") or "strict")
-    selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
-
-    marker_flags = plan.get("marker_flags") or kdeapply.DEFAULT_MARKER_FLAGS
-    comment_prefixes = plan.get("comment_prefixes") or kdeapply.DEFAULT_COMMENT_PREFIXES
-    placeholder_patterns = plan.get("placeholder_patterns") or []
-    lang = str(plan.get("lang", ""))
-
-    files_written: list[str] = []
-    files_skipped: list[str] = []
-    errors: list[str] = []
-    warnings: list[str] = []
-    entries_applied = 0
-
-    post_index_warnings: list[str] = []
-    files = plan.get("files") if isinstance(plan, dict) else None
-    if not isinstance(files, list):
-        raise typer.Exit(1)
-
-    for file_item in files:
-        if not isinstance(file_item, dict):
-            continue
-        file_path = str(file_item.get("file_path", ""))
-        base_sha256 = str(file_item.get("base_sha256", ""))
-        entries = list(file_item.get("entries", []))
-
-        relpath_key = file_path.casefold() if path_casefold else file_path
-        lock_path = locks.per_file_lock_path(
-            project_root,
-            locks.lock_id(project_id, relpath_key),
-        )
-        full_path = project_root / file_path
-        file_result = kdeapply.apply_plan_to_file(
-            file_path,
-            entries,
-            selected_mode,
-            selected_overwrite,
-            full_path=full_path,
-            lock_path=lock_path,
-            base_sha256=base_sha256,
-            lang=lang,
-            marker_flags=marker_flags,
-            comment_prefixes=comment_prefixes,
-            placeholder_patterns=placeholder_patterns,
-        )
-
-        if file_result.errors:
-            errors.extend(file_result.errors)
-            files_skipped.append(file_path)
-            continue
-        if file_result.warnings:
-            warnings.extend(file_result.warnings)
-
-        if file_result.skipped:
-            files_skipped.append(file_path)
-            continue
-        if file_result.wrote:
-            files_written.append(file_path)
-            entries_applied += file_result.entries_applied
-            if post_index_flag and workspace_conn is not None:
-                try:
-                    data = full_path.read_bytes()
-                    sha256_hex = hashlib.sha256(data).hexdigest()
-                    stat = full_path.stat()
-                    workspace_tm.index_file_snapshot_tm(
-                        workspace_conn,
-                        file_path=file_path,
-                        lang=lang,
-                        bytes=data,
-                        sha256=sha256_hex,
-                        mtime_ns=stat.st_mtime_ns,
-                        size=stat.st_size,
-                        config=config,
-                    )
-                except Exception as exc:
-                    post_index_warnings.append(f"post-index failed for {file_path}: {exc}")
+                post_index_warnings.append(f"post-index failed for {file_path}: {exc}")
 
     if workspace_conn is not None:
         workspace_conn.close()
 
-    if errors:
-        for error in errors:
+    if result.errors:
+        for error in result.errors:
             typer.secho(error, err=True)
         raise typer.Exit(1)
 
-    if warnings or post_index_warnings:
-        for warning in warnings + post_index_warnings:
+    if result.warnings or post_index_warnings:
+        for warning in result.warnings + post_index_warnings:
             typer.secho(f"Warning: {warning}", err=True)
 
     typer.echo(
-        f"Applied {entries_applied} entries "
-        f"({len(files_written)} files written, {len(files_skipped)} skipped)."
+        f"Applied {result.entries_applied} entries "
+        f"({len(result.files_written)} files written, {len(result.files_skipped)} skipped)."
     )
 
 
@@ -573,16 +521,12 @@ def translate(
     path_casefold = bool(project.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(config)
-    selected_mode = str(apply_mode or apply_defaults.get("mode") or "strict")
-    selected_overwrite = str(overwrite or apply_defaults.get("overwrite") or "conservative")
     post_index_flag = apply_defaults.get("post_index") == "on"
 
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
         project_id=str(project["project_id"]),
         config=config,
-        config_hash=config.config_hash,
-        embed_policy_hash=config.embed_policy_hash,
         lang=lang,
         cache=cache_mode,
         examples_mode=examples,
@@ -592,13 +536,9 @@ def translate(
         sqlite_vector_path=sqlite_vector_path,
     )
 
-    combined_plan = None
-    files_written: list[str] = []
-    files_skipped: list[str] = []
-    warnings: list[str] = []
-    errors: list[str] = []
-    entries_applied = 0
+    files_payload: list[dict] = []
     workspace_conn = None
+    result = None
 
     if post_index_flag:
         try:
@@ -623,98 +563,74 @@ def translate(
                 config=config,
                 run_llm=True,
             )
-
-            file_path = str(file_plan.get("file_path", ""))
-            base_sha256 = str(file_plan.get("base_sha256", ""))
-            entries = list(file_plan.get("entries", []))
-            relpath_key = file_path.casefold() if path_casefold else file_path
-            lock_path = locks.per_file_lock_path(
-                project_root,
-                locks.lock_id(str(project["project_id"]), relpath_key),
-            )
-            full_path = project_root / file_path
-            file_result = kdeapply.apply_plan_to_file(
-                file_path,
-                entries,
-                selected_mode,
-                selected_overwrite,
-                full_path=full_path,
-                lock_path=lock_path,
-                base_sha256=base_sha256,
-                lang=lang,
-                marker_flags=builder.marker_flags,
-                comment_prefixes=builder.comment_prefixes,
-                placeholder_patterns=[],
-            )
-
-            if file_result.errors:
-                errors.extend(file_result.errors)
-                files_skipped.append(file_path)
-                continue
-            if file_result.warnings:
-                warnings.extend(file_result.warnings)
-
-            if file_result.skipped:
-                files_skipped.append(file_path)
-                continue
-            if file_result.wrote:
-                files_written.append(file_path)
-                entries_applied += file_result.entries_applied
-                if post_index_flag and workspace_conn is not None:
-                    try:
-                        data = full_path.read_bytes()
-                        sha256_hex = hashlib.sha256(data).hexdigest()
-                        stat = full_path.stat()
-                        workspace_tm.index_file_snapshot_tm(
-                            workspace_conn,
-                            file_path=file_path,
-                            lang=lang,
-                            bytes=data,
-                            sha256=sha256_hex,
-                            mtime_ns=stat.st_mtime_ns,
-                            size=stat.st_size,
-                            config=config,
-                        )
-                    except Exception as exc:
-                        warnings.append(f"post-index failed for {file_path}: {exc}")
-
-            if out is not None:
-                if combined_plan is None:
-                    combined_plan = {
-                        "format": kdeplan.PLAN_FORMAT_VERSION,
-                        "project_id": str(project["project_id"]),
-                        "config_hash": config.config_hash,
-                        "lang": lang,
-                        "marker_flags": list(builder.marker_flags),
-                        "comment_prefixes": list(builder.comment_prefixes),
-                        "ai_flag": builder.ai_flag,
-                        "apply_defaults": {
-                            "mode": str(apply_defaults.get("mode", "strict")),
-                            "overwrite": str(apply_defaults.get("overwrite", "conservative")),
-                            "post_index": str(apply_defaults.get("post_index", "off")),
-                        },
-                        "files": [],
-                    }
-                combined_plan["files"].append(file_plan)
+            files_payload.append(file_plan)
     finally:
         builder.close()
+
+    combined_plan = {
+        "format": kdeplan.PLAN_FORMAT_VERSION,
+        "project_id": str(project["project_id"]),
+        "config_hash": config.config_hash,
+        "lang": lang,
+        "marker_flags": list(builder.marker_flags),
+        "comment_prefixes": list(builder.comment_prefixes),
+        "ai_flag": builder.ai_flag,
+        "apply_defaults": {
+            "mode": str(apply_defaults.get("mode", "strict")),
+            "overwrite": str(apply_defaults.get("overwrite", "conservative")),
+            "post_index": str(apply_defaults.get("post_index", "off")),
+        },
+        "files": files_payload,
+    }
+
+    try:
+        result = kdeapply.apply_plan(
+            combined_plan,
+            project_root=project_root,
+            config=config,
+            apply_mode=apply_mode,
+            overwrite=overwrite,
+        )
+
+        post_index_warnings: list[str] = []
+        if post_index_flag and workspace_conn is not None:
+            for file_path in result.files_written:
+                try:
+                    full_path = project_root / file_path
+                    data = full_path.read_bytes()
+                    sha256_hex = hashlib.sha256(data).hexdigest()
+                    stat = full_path.stat()
+                    workspace_tm.index_file_snapshot_tm(
+                        workspace_conn,
+                        file_path=file_path,
+                        lang=lang,
+                        bytes=data,
+                        sha256=sha256_hex,
+                        mtime_ns=stat.st_mtime_ns,
+                        size=stat.st_size,
+                        config=config,
+                    )
+                except Exception as exc:
+                    post_index_warnings.append(f"post-index failed for {file_path}: {exc}")
+
+        if out is not None:
+            kdeplan.write_plan(out, combined_plan)
+
+        if result.errors:
+            for error in result.errors:
+                typer.secho(error, err=True)
+            raise typer.Exit(1)
+
+        if result.warnings or post_index_warnings:
+            for warning in result.warnings + post_index_warnings:
+                typer.secho(f"Warning: {warning}", err=True)
+    finally:
         if workspace_conn is not None:
             workspace_conn.close()
 
-    if errors:
-        for error in errors:
-            typer.secho(error, err=True)
-        raise typer.Exit(1)
-
-    if out is not None and combined_plan is not None:
-        kdeplan.write_plan(out, combined_plan)
-
-    if warnings:
-        for warning in warnings:
-            typer.secho(f"Warning: {warning}", err=True)
     typer.echo(
-        f"Applied {entries_applied} entries "
-        f"({len(files_written)} files written, {len(files_skipped)} skipped)."
+        f"Applied {result.entries_applied} entries "
+        f"({len(result.files_written)} files written, {len(result.files_skipped)} skipped)."
     )
 
 
