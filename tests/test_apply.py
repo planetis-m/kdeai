@@ -760,6 +760,283 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "Datei")
 
+    def test_apply_rejects_unsupported_plan_format(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["format"] = 999
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertTrue(result.errors)
+            self.assertIn("unsupported plan format", result.errors)
+
+    def test_apply_rejects_unsupported_apply_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="weird",
+                overwrite="conservative",
+            )
+
+            self.assertTrue(result.errors)
+            self.assertTrue(any("unsupported apply mode" in error for error in result.errors))
+
+    def test_apply_rejects_missing_lang(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["lang"] = ""
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertTrue(result.errors)
+            self.assertIn("plan lang missing", result.errors)
+
+    def test_apply_skips_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["files"].append(
+                {
+                    "file_path": "locale/missing.po",
+                    "base_sha256": "",
+                    "entries": [],
+                }
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertIn("locale/missing.po", result.files_skipped)
+            self.assertTrue(any("locale/missing.po" in error for error in result.errors))
+            self.assertEqual(result.files_written, ["locale/de.po"])
+            self.assertEqual(result.entries_applied, 1)
+            self.assertFalse((root / "locale/missing.po").exists())
+
+    def test_apply_errors_include_entry_identity_on_missing_translation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = {
+                "format": 1,
+                "project_id": "proj",
+                "config_hash": config.config_hash,
+                "lang": "de",
+                "apply_defaults": {
+                    "mode": "strict",
+                    "overwrite": "conservative",
+                    "post_index": "off",
+                },
+                "files": [
+                    {
+                        "file_path": "locale/de.po",
+                        "base_sha256": base_sha256,
+                        "entries": [
+                            {
+                                "msgctxt": "menu",
+                                "msgid": "File",
+                                "msgid_plural": "",
+                                "base_state_hash": base_state_hash,
+                                "action": "llm",
+                            }
+                        ],
+                    }
+                ],
+            }
+            plan_payload = plan.finalize_plan(plan_payload)
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertTrue(result.errors)
+            self.assertTrue(any("File" in error for error in result.errors))
+
+    def test_apply_preserves_warnings_on_strict_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = {
+                "format": 1,
+                "project_id": "proj",
+                "config_hash": config.config_hash,
+                "lang": "de",
+                "apply_defaults": {
+                    "mode": "strict",
+                    "overwrite": "conservative",
+                    "post_index": "off",
+                },
+                "files": [
+                    {
+                        "file_path": "locale/de.po",
+                        "base_sha256": base_sha256,
+                        "entries": [
+                            {
+                                "msgctxt": "menu",
+                                "msgid": "File",
+                                "msgid_plural": "",
+                                "base_state_hash": base_state_hash,
+                                "action": "weird",
+                            },
+                            {
+                                "msgctxt": "menu",
+                                "msgid": "Missing",
+                                "msgid_plural": "",
+                                "base_state_hash": "missing",
+                                "action": "copy_tm",
+                            },
+                        ],
+                    }
+                ],
+            }
+            plan_payload = plan.finalize_plan(plan_payload)
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertIn("locale/de.po", result.files_skipped)
+            self.assertTrue(any("unsupported action" in warning for warning in result.warnings))
+
     def test_apply_fails_on_project_id_mismatch(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -842,6 +1119,117 @@ class TestApplyAdditionalCases(unittest.TestCase):
             self.assertTrue(any("plan file_path is invalid" in error for error in result.errors))
             outside_path = (root / "../secrets.po").resolve()
             self.assertFalse(outside_path.exists())
+
+    def test_apply_rejects_dot_path_segment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "x.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="./x.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertTrue(result.errors)
+            self.assertTrue(any("plan file_path is invalid" in error for error in result.errors))
+
+    def test_apply_rejects_double_slash_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "a" / "b.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="a//b.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertTrue(result.errors)
+            self.assertTrue(any("plan file_path is invalid" in error for error in result.errors))
+
+    def test_apply_accepts_normalized_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "a" / "b.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+            config = build_config()
+            plan_payload = self._build_plan(
+                file_path="a/b.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertFalse(any("plan file_path is invalid" in error for error in result.errors))
+            self.assertEqual(result.files_written, ["a/b.po"])
 
     def test_apply_rejects_absolute_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:

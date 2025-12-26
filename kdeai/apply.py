@@ -51,6 +51,58 @@ class ApplyFileResult:
     applied_entries: list[polib.POEntry]
 
 
+def _validate_plan_header(
+    plan: Mapping[str, object],
+    *,
+    project_id: str,
+    config: Config,
+    marker_flags: list[str],
+    comment_prefixes: list[str],
+    ai_flag: str,
+    placeholder_patterns: list[str],
+) -> list[str]:
+    plan_project_id = str(plan.get("project_id", ""))
+    if plan_project_id != project_id:
+        return ["plan project_id does not match current project"]
+    plan_config_hash = str(plan.get("config_hash", ""))
+    if not plan_config_hash or plan_config_hash != config.config_hash:
+        return ["plan config_hash does not match current config"]
+
+    errors: list[str] = []
+    plan_marker_flags = plan.get("marker_flags")
+    if plan_marker_flags is not None:
+        if not isinstance(plan_marker_flags, (list, tuple)):
+            errors.append("plan marker_flags must be a list")
+        else:
+            normalized = [str(flag) for flag in plan_marker_flags]
+            if sorted(normalized) != sorted(marker_flags):
+                errors.append("plan marker_flags do not match config")
+
+    plan_comment_prefixes = plan.get("comment_prefixes")
+    if plan_comment_prefixes is not None:
+        if not isinstance(plan_comment_prefixes, (list, tuple)):
+            errors.append("plan comment_prefixes must be a list")
+        else:
+            normalized = [str(prefix) for prefix in plan_comment_prefixes]
+            if sorted(normalized) != sorted(comment_prefixes):
+                errors.append("plan comment_prefixes do not match config")
+
+    plan_ai_flag = plan.get("ai_flag")
+    if plan_ai_flag is not None and str(plan_ai_flag) != ai_flag:
+        errors.append("plan ai_flag does not match config")
+
+    plan_placeholder_patterns = plan.get("placeholder_patterns")
+    if plan_placeholder_patterns is not None:
+        if not isinstance(plan_placeholder_patterns, (list, tuple)):
+            errors.append("plan placeholder_patterns must be a list")
+        else:
+            normalized = [str(pattern) for pattern in plan_placeholder_patterns]
+            if normalized != placeholder_patterns:
+                errors.append("plan placeholder_patterns do not match config")
+
+    return errors
+
+
 def _load_po_from_bytes(data: bytes) -> polib.POFile:
     return po_utils.load_po_from_bytes(data)
 
@@ -250,26 +302,16 @@ def apply_plan_to_file(
 ) -> ApplyFileResult:
     tool_prefixes = [str(prefix) for prefix in comment_prefixes]
     tool_prefix_set = set(tool_prefixes)
-    if overwrite_policy not in ALLOWED_OVERWRITE_POLICIES:
-        return ApplyFileResult(
-            file_path,
-            False,
-            True,
-            0,
-            [f"unsupported overwrite mode: {overwrite_policy}"],
-            [],
-            [],
-        )
+    file_warnings: list[str] = []
     phase_a = snapshot.locked_read_file(full_path, lock_path)
     if mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
-        return ApplyFileResult(file_path, False, True, 0, [], [], [])
+        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     po_file = _load_po_from_bytes(phase_a.bytes)
     entry_map = {_entry_key(entry): entry for entry in po_file if entry.msgid != "" and not entry.obsolete}
 
     to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     mismatch = False
-    file_warnings: list[str] = []
     for entry_item in plan_items:
         if not isinstance(entry_item, Mapping):
             mismatch = True
@@ -317,7 +359,12 @@ def apply_plan_to_file(
 
         translation = entry_item.get("translation") if isinstance(entry_item, Mapping) else None
         if not isinstance(translation, Mapping):
-            file_errors.append("plan entry missing translation for action")
+            entry_key = (
+                str(entry_item.get("msgctxt", "")),
+                str(entry_item.get("msgid", "")),
+                str(entry_item.get("msgid_plural", "")),
+            )
+            file_errors.append(f"plan entry missing translation for action: {entry_key}")
             break
         msgstr = str(translation.get("msgstr", ""))
         msgstr_plural = translation.get("msgstr_plural", {})
@@ -398,10 +445,10 @@ def apply_plan_to_file(
             current_sha = hashlib.sha256(current_bytes).hexdigest()
             if current_sha != phase_a.sha256:
                 os.unlink(tmp_name)
-                return ApplyFileResult(file_path, False, True, 0, [], [], [])
+                return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
             if mode == "strict" and current_sha != base_sha256:
                 os.unlink(tmp_name)
-                return ApplyFileResult(file_path, False, True, 0, [], [], [])
+                return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
             os.replace(tmp_name, full_path)
     except Exception:
         if Path(tmp_name).exists():
@@ -431,61 +478,34 @@ def apply_plan(
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
     post_index_flag = bool(post_index) and isinstance(workspace_conn, sqlite3.Connection)
 
-    plan_project_id = str(plan.get("project_id", ""))
-    plan_config_hash = str(plan.get("config_hash", ""))
     lang = str(plan.get("lang", ""))
+    plan_format = plan.get("format") if isinstance(plan, Mapping) else None
     marker_flags, comment_prefixes, review_prefix, ai_prefix, ai_flag = (
         _marker_settings_from_config(config)
     )
     placeholder_patterns = list(config.apply.validation_patterns)
 
-    errors: list[str] = []
-    if plan_project_id != project_id:
-        return ApplyResult(
-            [],
-            [],
-            0,
-            ["plan project_id does not match current project"],
-            [],
-        )
-    if not plan_config_hash or plan_config_hash != config.config_hash:
-        return ApplyResult(
-            [],
-            [],
-            0,
-            ["plan config_hash does not match current config"],
-            [],
-        )
-    plan_marker_flags = plan.get("marker_flags")
-    if plan_marker_flags is not None:
-        if not isinstance(plan_marker_flags, (list, tuple)):
-            errors.append("plan marker_flags must be a list")
-        else:
-            normalized = [str(flag) for flag in plan_marker_flags]
-            if sorted(normalized) != sorted(marker_flags):
-                errors.append("plan marker_flags do not match config")
+    errors = _validate_plan_header(
+        plan,
+        project_id=project_id,
+        config=config,
+        marker_flags=marker_flags,
+        comment_prefixes=comment_prefixes,
+        ai_flag=ai_flag,
+        placeholder_patterns=placeholder_patterns,
+    )
+    if errors:
+        return ApplyResult([], [], 0, errors, [])
 
-    plan_comment_prefixes = plan.get("comment_prefixes")
-    if plan_comment_prefixes is not None:
-        if not isinstance(plan_comment_prefixes, (list, tuple)):
-            errors.append("plan comment_prefixes must be a list")
-        else:
-            normalized = [str(prefix) for prefix in plan_comment_prefixes]
-            if sorted(normalized) != sorted(comment_prefixes):
-                errors.append("plan comment_prefixes do not match config")
-
-    plan_ai_flag = plan.get("ai_flag")
-    if plan_ai_flag is not None and str(plan_ai_flag) != ai_flag:
-        errors.append("plan ai_flag does not match config")
-
-    plan_placeholder_patterns = plan.get("placeholder_patterns")
-    if plan_placeholder_patterns is not None:
-        if not isinstance(plan_placeholder_patterns, (list, tuple)):
-            errors.append("plan placeholder_patterns must be a list")
-        else:
-            normalized = [str(pattern) for pattern in plan_placeholder_patterns]
-            if normalized != placeholder_patterns:
-                errors.append("plan placeholder_patterns do not match config")
+    errors = []
+    if str(plan_format) != "1":
+        errors.append("unsupported plan format")
+    if selected_mode not in {"strict", "rebase"}:
+        errors.append(f"unsupported apply mode: {selected_mode}")
+    if not lang.strip():
+        errors.append("plan lang missing")
+    if selected_overwrite not in ALLOWED_OVERWRITE_POLICIES:
+        errors.append(f"unsupported overwrite mode: {selected_overwrite}")
 
     files_written: list[str] = []
     files_skipped: list[str] = []
@@ -514,6 +534,12 @@ def apply_plan(
         if Path(file_path).is_absolute():
             path_errors.append(f"plan file_path is invalid: {file_path}")
             continue
+        if PurePosixPath(file_path).as_posix() != file_path:
+            path_errors.append(f"plan file_path is invalid: {file_path}")
+            continue
+        if "." in PurePosixPath(file_path).parts:
+            path_errors.append(f"plan file_path is invalid: {file_path}")
+            continue
         if ".." in PurePosixPath(file_path).parts:
             path_errors.append(f"plan file_path is invalid: {file_path}")
             continue
@@ -537,20 +563,25 @@ def apply_plan(
             locks.lock_id(project_id, relpath_key),
         )
         full_path = (project_root / file_path).resolve()
-        file_result = apply_plan_to_file(
-            file_path,
-            entries,
-            selected_mode,
-            selected_overwrite,
-            full_path=full_path,
-            lock_path=lock_path,
-            base_sha256=base_sha256,
-            lang=lang,
-            marker_flags=marker_flags,
-            comment_prefixes=comment_prefixes,
-            placeholder_patterns=placeholder_patterns,
-            review_prefix=review_prefix,
-        )
+        try:
+            file_result = apply_plan_to_file(
+                file_path,
+                entries,
+                selected_mode,
+                selected_overwrite,
+                full_path=full_path,
+                lock_path=lock_path,
+                base_sha256=base_sha256,
+                lang=lang,
+                marker_flags=marker_flags,
+                comment_prefixes=comment_prefixes,
+                placeholder_patterns=placeholder_patterns,
+                review_prefix=review_prefix,
+            )
+        except Exception as exc:
+            errors.append(f"{file_path}: {exc}")
+            files_skipped.append(file_path)
+            continue
 
         if file_result.warnings:
             warnings.extend(file_result.warnings)

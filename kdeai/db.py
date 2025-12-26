@@ -190,6 +190,10 @@ def connect_readonly(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_writable(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(str(path))
+
+
 def get_db_connection(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.enable_load_extension(True)

@@ -293,7 +293,7 @@ def _build_examples_db(
     if output_path.exists():
         output_path.unlink()
 
-    conn = sqlite3.connect(str(output_path))
+    conn = kdedb.connect_writable(output_path)
     conn.executescript(kdedb.EXAMPLES_SCHEMA)
 
     include_file_sha256 = source_snapshot_kind == "reference_tm"

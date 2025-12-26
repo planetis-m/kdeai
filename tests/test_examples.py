@@ -1,6 +1,9 @@
 import math
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from conftest import build_config
 from kdeai import examples
@@ -240,6 +243,54 @@ class TestQueryExamples(unittest.TestCase):
         with self.assertRaises(ValueError):
             examples.query_examples(db, query_embedding=b"\x00", top_n=1)
         conn.close()
+
+
+class TestExamplesDb(unittest.TestCase):
+    def test_build_examples_db_enables_sqlite_vector(self):
+        config = _base_config()
+        rows = [
+            (
+                "key1",
+                "ctx:\nid:Hello\npl:",
+                "",
+                "de",
+                "Hallo",
+                "{}",
+                "reviewed",
+                0,
+                "hash",
+                "file.po",
+            )
+        ]
+
+        def embedder(texts):
+            return [[0.1, 0.2] for _ in texts]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "examples.sqlite"
+            with (
+                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector") as enable_vector,
+                mock.patch("kdeai.examples._create_vector_index") as create_index,
+            ):
+                create_index.return_value = None
+                examples._build_examples_db(
+                    rows,
+                    output_path=output_path,
+                    scope="workspace",
+                    source_snapshot_kind="workspace_tm",
+                    source_snapshot_id=None,
+                    lang="de",
+                    config=config,
+                    project_id="proj",
+                    config_hash=config.config_hash,
+                    embed_policy_hash="hash",
+                    embedder=embedder,
+                    sqlite_vector_path="/tmp/vector.so",
+                )
+
+                enable_vector.assert_called_once()
+                _, kwargs = enable_vector.call_args
+                self.assertEqual(kwargs.get("extension_path"), "/tmp/vector.so")
 
 
 if __name__ == "__main__":
