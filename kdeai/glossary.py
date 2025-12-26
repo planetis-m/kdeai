@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 import json
-import re
 import sqlite3
 
 import spacy
@@ -49,37 +48,27 @@ class GlossaryNormalizer:
         self.normalization_id = normalization_id
 
     def normalize(self, text: str) -> list[str]:
-        doc = self._nlp(_preprocess_text(text))
-        tokens: list[str] = []
-        for token in doc:
-            if token.is_space:
-                continue
-            if token.is_punct:
-                continue
-            lemma = token.lemma_ if token.lemma_ else token.text
-            tokens.append(lemma.casefold())
-        return tokens
+        doc = self._nlp(text)
+        return _lemma_tokens_from_doc(doc)
 
 
-def _clean_accelerators(text: str) -> str:
-    protected = text.replace("&&", "\x00")
-    stripped = protected.replace("&", "")
-    return stripped.replace("\x00", "&")
+def _lemma_tokens_from_doc(doc) -> list[str]:
+    tokens: list[str] = []
+    for token in doc:
+        if token.is_space or token.is_punct:
+            continue
+        lemma = token.lemma_ if token.lemma_ else token.text
+        tokens.append(lemma.casefold())
+    return tokens
 
 
-def _strip_xml_tags(text: str) -> str:
-    return re.sub(r"<[^>]+>", " ", text)
-
-
-def _normalize_variables(text: str) -> str:
-    return re.sub(r"%[sd0-9]+", "<VAR>", text)
-
-
-def _preprocess_text(text: str) -> str:
-    text = _clean_accelerators(text)
-    text = _strip_xml_tags(text)
-    text = _normalize_variables(text)
-    return re.sub(r"\s+", " ", text).strip()
+def _has_disallowed_multitoken(doc) -> bool:
+    for token in doc:
+        if token.is_space or token.is_punct:
+            continue
+        if token.pos_ in {"DET", "ADP", "PART", "PRON", "CCONJ", "SCONJ"}:
+            return True
+    return False
 
 
 def _load_spacy_model(model_name: str):
@@ -195,20 +184,32 @@ def build_glossary_db(
         file_path = str(row[6])
         file_sha256 = str(row[7])
 
-        cleaned_msgid = _preprocess_text(msgid)
-        if not cleaned_msgid:
+        stripped_msgid = msgid.strip()
+        if (
+            not stripped_msgid
+            or stripped_msgid.endswith((".", "?", "!"))
+            or "&" in msgid
+            or "<" in msgid
+            or ">" in msgid
+            or "\n" in msgid
+        ):
             continue
+
         tgt_primary = _select_translation(msgstr, msgstr_plural)
         if not tgt_primary:
             continue
 
-        lemma_tokens = normalizer.normalize(cleaned_msgid)
-        token_count = len(lemma_tokens)
-        if not lemma_tokens or token_count > MAX_TERM_TOKENS:
+        doc = normalizer._nlp(msgid)
+        if any(token.is_punct for token in doc):
             continue
-
-        cleaned_msgstr = _preprocess_text(tgt_primary)
-        if not cleaned_msgstr:
+        lemma_tokens = _lemma_tokens_from_doc(doc)
+        token_count = len(lemma_tokens)
+        if (
+            not lemma_tokens
+            or token_count > MAX_TERM_TOKENS
+        ):
+            continue
+        if token_count > 1 and _has_disallowed_multitoken(doc):
             continue
 
         term_key = kdehash.term_key(lemma_tokens)
@@ -220,15 +221,15 @@ def build_glossary_db(
             term_key=term_key,
             src_lang=src_lang,
             tgt_lang=lang,
-            src_surface=cleaned_msgid,
+            src_surface=msgid,
             src_lemma_seq=list(lemma_tokens),
             token_count=token_count,
-            tgt_primary=cleaned_msgstr,
+            tgt_primary=tgt_primary,
             tgt_alternates=[],
             freq=freq,
             score=score,
-            evidence_msgid=cleaned_msgid,
-            evidence_msgstr=cleaned_msgstr,
+            evidence_msgid=msgid,
+            evidence_msgstr=tgt_primary,
             file_path=file_path,
             source_key=source_key,
             file_sha256=file_sha256,

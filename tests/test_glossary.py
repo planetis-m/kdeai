@@ -227,7 +227,7 @@ class TestGlossaryMining(unittest.TestCase):
         except OSError:
             self.skipTest("en_core_web_sm not installed; run: python -m spacy download en_core_web_sm")
 
-        msgids = {"Acting as Admin", "Finish", "Empty Trash"}
+        msgids = {"Folders", "Trash", "Dolphin Toolbar"}
         playground, units = _load_playground_units(msgids)
         file_sha256 = kdehash.sha256_hex_bytes(playground.read_bytes())
 
