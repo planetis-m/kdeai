@@ -23,13 +23,11 @@ def _load_env_if_missing(keys: list[str]) -> None:
         name = name.strip()
         if name and name not in os.environ:
             os.environ[name] = value.strip()
-    if not os.getenv("OPENAI_API_KEY") and os.getenv("OPENROUTER_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = os.environ["OPENROUTER_API_KEY"]
 
 
 def test_configure_dspy_uses_generation_model_id() -> None:
-    _load_env_if_missing(["OPENAI_API_KEY", "OPENROUTER_API_KEY"])
-    assert os.getenv("OPENAI_API_KEY"), "OPENAI_API_KEY or OPENROUTER_API_KEY must be set for DSPy usage"
+    _load_env_if_missing(["OPENROUTER_API_KEY"])
+    assert os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY must be set for DSPy usage"
 
     config = Config(
         data={
@@ -54,8 +52,8 @@ def test_configure_dspy_uses_generation_model_id() -> None:
 
 
 def test_configure_dspy_falls_back_to_examples_embedding_model() -> None:
-    _load_env_if_missing(["OPENAI_API_KEY", "OPENROUTER_API_KEY"])
-    assert os.getenv("OPENAI_API_KEY"), "OPENAI_API_KEY or OPENROUTER_API_KEY must be set for DSPy usage"
+    _load_env_if_missing(["OPENROUTER_API_KEY"])
+    assert os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY must be set for DSPy usage"
 
     config = Config(
         data={

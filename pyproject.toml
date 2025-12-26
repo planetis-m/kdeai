@@ -7,7 +7,7 @@ name = "kdeai"
 version = "0.0.0"
 description = "KDEAI translation system"
 readme = "SPEC.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "KDEAI" }]
 dependencies = [
@@ -18,9 +18,11 @@ dependencies = [
   "typer",
   "pydantic",
   "dspy",
-  "python-dotenv",
-  "openai",
+  "python-dotenv"
 ]
 
 [project.scripts]
 kdeai = "kdeai.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest"]

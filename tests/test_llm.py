@@ -62,14 +62,12 @@ def _load_env_if_missing(keys: list[str]) -> None:
         name = name.strip()
         if name and name not in os.environ:
             os.environ[name] = value.strip()
-    if not os.getenv("OPENAI_API_KEY") and os.getenv("OPENROUTER_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = os.environ["OPENROUTER_API_KEY"]
 
 
 def test_batch_translate_plan_updates_llm_entries() -> None:
-    _load_env_if_missing(["OPENAI_API_KEY", "OPENROUTER_API_KEY"])
-    if not os.getenv("OPENAI_API_KEY"):
-        raise AssertionError("OPENAI_API_KEY or OPENROUTER_API_KEY must be set for DSPy usage")
+    _load_env_if_missing(["OPENROUTER_API_KEY"])
+    if not os.getenv("OPENROUTER_API_KEY"):
+        raise AssertionError("OPENROUTER_API_KEY must be set for DSPy usage")
 
     plan = {
         "lang": "de",

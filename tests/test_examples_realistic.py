@@ -31,8 +31,6 @@ def _load_env_if_missing(keys: list[str]) -> None:
         name = name.strip()
         if name and name not in os.environ:
             os.environ[name] = value.strip()
-    if not os.getenv("OPENAI_API_KEY") and os.getenv("OPENROUTER_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = os.environ["OPENROUTER_API_KEY"]
 
 
 def _write_trimmed_po(src_path: Path, dest_path: Path, *, max_entries: int) -> list[str]:
@@ -69,8 +67,8 @@ def _write_trimmed_po(src_path: Path, dest_path: Path, *, max_entries: int) -> l
 
 
 def test_compute_embedding_returns_real_values() -> None:
-    _load_env_if_missing(["OPENAI_API_KEY", "OPENROUTER_API_KEY"])
-    assert os.getenv("OPENAI_API_KEY"), "OPENAI_API_KEY or OPENROUTER_API_KEY must be set"
+    _load_env_if_missing(["OPENROUTER_API_KEY"])
+    assert os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY must be set"
 
     embedding = compute_embedding("File")
     assert isinstance(embedding, list)
@@ -109,7 +107,7 @@ def _build_examples_db_from_playground(tmp_path: Path) -> tuple[Path, po_model.P
         "prompt": {
             "examples": {
                 "embedding_policy": {
-                    "model_id": "google/gemini-embedding-001",
+                    "model_id": "openrouter/google/gemini-embedding-001",
                     "dim": len(compute_embedding("embedding probe")),
                     "distance": "cosine",
                     "encoding": "float32_le",
@@ -155,8 +153,8 @@ def _build_examples_db_from_playground(tmp_path: Path) -> tuple[Path, po_model.P
 
 
 def test_build_examples_db_from_playground(tmp_path: Path, monkeypatch) -> None:
-    _load_env_if_missing(["OPENAI_API_KEY", "OPENROUTER_API_KEY"])
-    assert os.getenv("OPENAI_API_KEY"), "OPENAI_API_KEY or OPENROUTER_API_KEY must be set"
+    _load_env_if_missing(["OPENROUTER_API_KEY"])
+    assert os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY must be set"
 
     project_root = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(project_root)
@@ -183,8 +181,8 @@ def test_build_examples_db_from_playground(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_retrieve_few_shot_examples_from_db(tmp_path: Path, monkeypatch) -> None:
-    _load_env_if_missing(["OPENAI_API_KEY", "OPENROUTER_API_KEY"])
-    assert os.getenv("OPENAI_API_KEY"), "OPENAI_API_KEY or OPENROUTER_API_KEY must be set"
+    _load_env_if_missing(["OPENROUTER_API_KEY"])
+    assert os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY must be set"
 
     project_root = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(project_root)
