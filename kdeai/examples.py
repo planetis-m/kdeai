@@ -545,25 +545,18 @@ def query_examples(
         review_statuses=review_statuses,
         allow_ai_generated=allow_ai_generated,
     )
-    scan_limit = int(top_n)
     has_filters = lang is not None or bool(review_statuses) or allow_ai_generated is False
-    max_scan = max(scan_limit, min(scan_limit * 50, 10000))
+    scan_limit = int(top_n)
     if has_filters:
-        scan_limit = min(max(scan_limit * 5, scan_limit), max_scan)
+        scan_limit = min(max(scan_limit * 10, scan_limit), 10000)
 
-    rows: list[sqlite3.Row] = []
-    while True:
-        params: list[object] = [blob, int(scan_limit)]
-        if lang is not None:
-            params.append(lang)
-        if review_statuses:
-            params.extend(review_statuses)
-        rows = db.conn.execute(sql, params).fetchall()
-        if not has_filters or len(rows) >= top_n or scan_limit >= max_scan:
-            break
-        scan_limit = min(scan_limit * 2, max_scan)
+    params: list[object] = [blob, int(scan_limit)]
+    if lang is not None:
+        params.append(lang)
+    if review_statuses:
+        params.extend(review_statuses)
 
-    rows = rows[:top_n]
+    rows = db.conn.execute(sql, params).fetchall()[:top_n]
     matches: list[ExampleMatch] = []
     for row in rows:
         matches.append(

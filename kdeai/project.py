@@ -110,18 +110,15 @@ class Project:
     config: Config
 
     @classmethod
-    def load(cls, root: Path) -> "Project":
+    def load_project_data(cls, root: Path) -> dict:
         project_path = _project_path(root)
-        config_path = _project_dir(root) / "config.json"
-        project_data = _read_project(project_path)
-        config = load_config(config_path)
-        return cls(root=root, project_data=project_data, config=config)
+        return _read_project(project_path)
 
     @classmethod
-    def load_or_init(cls, root: Path) -> "Project":
+    def ensure_project_data(cls, root: Path) -> dict:
         project_path = _project_path(root)
         if project_path.exists():
-            return cls.load(root)
+            return cls.load_project_data(root)
 
         project_dir = _project_dir(root)
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -137,4 +134,16 @@ class Project:
             kdehash.canonical_json(payload),
             encoding="utf-8",
         )
+        return payload
+
+    @classmethod
+    def load(cls, root: Path) -> "Project":
+        config_path = _project_dir(root) / "config.json"
+        project_data = cls.load_project_data(root)
+        config = load_config(config_path)
+        return cls(root=root, project_data=project_data, config=config)
+
+    @classmethod
+    def load_or_init(cls, root: Path) -> "Project":
+        cls.ensure_project_data(root)
         return cls.load(root)

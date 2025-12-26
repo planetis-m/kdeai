@@ -58,6 +58,7 @@ class PlanBuilder:
         config: Config,
         lang: str,
         cache: str = "on",
+        cache_write: str = "on",
         examples_mode: str | None = None,
         glossary_mode: str | None = None,
         overwrite: str | None = None,
@@ -76,6 +77,7 @@ class PlanBuilder:
             self.ai_flag,
         ) = po_utils.marker_settings_from_config(config)
         self.selected_overwrite = str(overwrite or config.apply.overwrite_default)
+        self.cache_write = cache_write
         self.assets = _build_assets(
             project_root=project_root,
             project_id=project_id,

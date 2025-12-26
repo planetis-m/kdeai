@@ -170,6 +170,51 @@ def _workspace_tm_settings(config: Config) -> tuple[int, str]:
     return int(workspace_cfg.busy_timeout_ms.write), str(workspace_cfg.synchronous).upper()
 
 
+def _resolve_planner_inputs(
+    *,
+    cache_mode: CacheMode,
+    examples: ExamplesMode | None,
+    glossary: GlossaryMode | None,
+    config: Config,
+    project_root: Path,
+) -> tuple[ExamplesMode, GlossaryMode, kdeexamples.EmbeddingFunc | None, str | None]:
+    resolved_examples_mode = _examples_mode_from_config(config, examples)
+    resolved_glossary_mode = _glossary_mode_from_config(config, glossary)
+    if cache_mode == "off":
+        return "off", "off", None, None
+    embedder = _maybe_embedder(
+        resolved_examples_mode,
+        _examples_embed_policy(config),
+    )
+    sqlite_vector_path = _sqlite_vector_path(project_root)
+    return resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path
+
+
+def _build_plan_header(
+    *,
+    project: Project,
+    config: Config,
+    lang: str,
+    builder: kdeplan.PlanBuilder,
+    apply_defaults: dict,
+) -> dict:
+    return {
+        "format": kdeplan.PLAN_FORMAT_VERSION,
+        "project_id": str(project.project_data["project_id"]),
+        "config_hash": config.config_hash,
+        "lang": lang,
+        "marker_flags": list(builder.marker_flags),
+        "comment_prefixes": list(builder.comment_prefixes),
+        "ai_flag": builder.ai_flag,
+        "placeholder_patterns": list(config.apply.validation_patterns),
+        "apply_defaults": {
+            "mode": str(apply_defaults.get("mode", "strict")),
+            "overwrite": str(apply_defaults.get("overwrite", "conservative")),
+            "post_index": str(apply_defaults.get("post_index", "off")),
+        },
+    }
+
+
 def _ensure_workspace_db(
     project_root: Path,
     *,
@@ -221,10 +266,8 @@ def main(ctx: typer.Context) -> None:
 @app.command()
 def init() -> None:
     project_root = Path.cwd()
-    project = Project.load_or_init(project_root)
-    typer.echo(
-        f"Initialized project {project.project_data['project_id']} at {_project_dir(project_root)}."
-    )
+    project_data = Project.ensure_project_data(project_root)
+    typer.echo(f"Initialized project {project_data['project_id']} at {_project_dir(project_root)}.")
     config_path = project_root / ".kdeai" / "config.json"
     if not config_path.exists():
         typer.secho("Missing .kdeai/config.json. Create it before planning or indexing.", err=True)
@@ -248,19 +291,15 @@ def plan(
     cache_write_flag = cache_write or "on"
     if cache_write_flag == "off":
         typer.secho("Note: plan never writes cache; --cache-write has no effect.", err=True)
-    resolved_examples_mode = _examples_mode_from_config(config, examples)
-    resolved_glossary_mode = _glossary_mode_from_config(config, glossary)
-    if cache_mode == "off":
-        resolved_examples_mode = "off"
-        resolved_glossary_mode = "off"
-        embedder = None
-        sqlite_vector_path = None
-    else:
-        embedder = _maybe_embedder(
-            resolved_examples_mode,
-            _examples_embed_policy(config),
+    resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
+        _resolve_planner_inputs(
+            cache_mode=cache_mode,
+            examples=examples,
+            glossary=glossary,
+            config=config,
+            project_root=project_root,
         )
-        sqlite_vector_path = _sqlite_vector_path(project_root)
+    )
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
@@ -268,6 +307,7 @@ def plan(
         config=config,
         lang=lang,
         cache=cache_mode,
+        cache_write=cache_write_flag,
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         embedder=embedder,
@@ -292,22 +332,14 @@ def plan(
 
     files_payload.sort(key=lambda item: str(item.get("file_path", "")))
     apply_cfg = _apply_defaults_from_config(config)
-    plan_payload = {
-        "format": kdeplan.PLAN_FORMAT_VERSION,
-        "project_id": str(project.project_data["project_id"]),
-        "config_hash": config.config_hash,
-        "lang": lang,
-        "marker_flags": sorted(builder.marker_flags),
-        "comment_prefixes": sorted(builder.comment_prefixes),
-        "ai_flag": builder.ai_flag,
-        "placeholder_patterns": list(config.apply.validation_patterns),
-        "apply_defaults": {
-            "mode": str(apply_cfg.get("mode", "strict")),
-            "overwrite": str(apply_cfg.get("overwrite", "conservative")),
-            "post_index": str(apply_cfg.get("post_index", "off")),
-        },
-        "files": files_payload,
-    }
+    plan_payload = _build_plan_header(
+        project=project,
+        config=config,
+        lang=lang,
+        builder=builder,
+        apply_defaults=apply_cfg,
+    )
+    plan_payload["files"] = files_payload
 
     if out is None:
         typer.echo(kdeplan.render_plan_json(plan_payload))
@@ -395,19 +427,15 @@ def translate(
     config = project.config
     cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
-    resolved_examples_mode = _examples_mode_from_config(config, examples)
-    resolved_glossary_mode = _glossary_mode_from_config(config, glossary)
-    if cache_mode == "off":
-        resolved_examples_mode = "off"
-        resolved_glossary_mode = "off"
-        embedder = None
-        sqlite_vector_path = None
-    else:
-        embedder = _maybe_embedder(
-            resolved_examples_mode,
-            _examples_embed_policy(config),
+    resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
+        _resolve_planner_inputs(
+            cache_mode=cache_mode,
+            examples=examples,
+            glossary=glossary,
+            config=config,
+            project_root=project_root,
         )
-        sqlite_vector_path = _sqlite_vector_path(project_root)
+    )
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(config)
@@ -421,6 +449,7 @@ def translate(
         config=config,
         lang=lang,
         cache=cache_mode,
+        cache_write=cache_write_flag,
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         overwrite=overwrite,
@@ -448,21 +477,13 @@ def translate(
             typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
             post_index_flag = False
 
-    plan_header = {
-        "format": kdeplan.PLAN_FORMAT_VERSION,
-        "project_id": str(project.project_data["project_id"]),
-        "config_hash": config.config_hash,
-        "lang": lang,
-        "marker_flags": sorted(builder.marker_flags),
-        "comment_prefixes": sorted(builder.comment_prefixes),
-        "ai_flag": builder.ai_flag,
-        "placeholder_patterns": list(config.apply.validation_patterns),
-        "apply_defaults": {
-            "mode": str(apply_defaults.get("mode", "strict")),
-            "overwrite": str(apply_defaults.get("overwrite", "conservative")),
-            "post_index": str(apply_defaults.get("post_index", "off")),
-        },
-    }
+    plan_header = _build_plan_header(
+        project=project,
+        config=config,
+        lang=lang,
+        builder=builder,
+        apply_defaults=apply_defaults,
+    )
 
     try:
         for path in _iter_po_paths(project_root, paths):
