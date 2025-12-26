@@ -10,6 +10,7 @@ import sqlite3
 import spacy
 
 from kdeai import db as kdedb
+from kdeai.config import Config
 from kdeai import hash as kdehash
 
 NORMALIZATION_ID = "kdeai_glossary_norm_v1"
@@ -75,17 +76,10 @@ def _load_spacy_model(model_name: str):
     return spacy.load(model_name)
 
 
-def build_normalizer_from_config(config: Mapping[str, object]) -> GlossaryNormalizer:
-    prompt = config.get("prompt") if isinstance(config, Mapping) else None
-    glossary_cfg = prompt.get("glossary") if isinstance(prompt, Mapping) else None
-    if not isinstance(glossary_cfg, Mapping):
-        raise ValueError("prompt.glossary config missing")
-    spacy_model = glossary_cfg.get("spacy_model")
-    if not spacy_model:
-        raise ValueError("prompt.glossary.spacy_model missing")
-    normalization_id = str(glossary_cfg.get("normalization_id") or NORMALIZATION_ID)
-    nlp = _load_spacy_model(str(spacy_model))
-    return GlossaryNormalizer(nlp, normalization_id=normalization_id)
+def build_normalizer_from_config(config: Config) -> GlossaryNormalizer:
+    glossary_cfg = config.prompt.glossary
+    nlp = _load_spacy_model(str(glossary_cfg.spacy_model))
+    return GlossaryNormalizer(nlp, normalization_id=str(glossary_cfg.normalization_id))
 
 
 def _canonical_json_list(values: Sequence[str]) -> str:
@@ -143,7 +137,7 @@ def build_glossary_db(
     reference_conn: sqlite3.Connection,
     *,
     output_path: Path,
-    config: Mapping[str, object],
+    config: Config,
     project_id: str,
     config_hash: str,
 ) -> Path:
@@ -156,10 +150,7 @@ def build_glossary_db(
         expected_kind="reference_tm",
     )
 
-    languages = config.get("languages") if isinstance(config, Mapping) else None
-    if not isinstance(languages, Mapping):
-        raise ValueError("languages config missing")
-    src_lang = str(languages.get("source") or "")
+    src_lang = config.languages.source
     if not src_lang:
         raise ValueError("languages.source missing")
 
@@ -267,11 +258,7 @@ def build_glossary_db(
             payload,
         )
 
-    spacy_model_name = str(
-        config.get("prompt", {})
-        .get("glossary", {})
-        .get("spacy_model", "unknown")
-    )
+    spacy_model_name = str(config.prompt.glossary.spacy_model)
     meta_payload = {
         "schema_version": "1",
         "kind": "glossary",

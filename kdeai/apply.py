@@ -13,6 +13,7 @@ import polib
 from kdeai import hash as kdehash
 from kdeai import locks
 from kdeai import po_model
+from kdeai.config import Config
 from kdeai import snapshot
 from kdeai import validate
 
@@ -365,7 +366,7 @@ def apply_plan(
     overwrite: str | None = None,
     post_index: bool | None = None,
     workspace_conn=None,
-    config: Mapping[str, object] | None = None,
+    config: Config | None = None,
     session_tm: dict | None = None,
 ) -> ApplyResult:
     project_meta = {}

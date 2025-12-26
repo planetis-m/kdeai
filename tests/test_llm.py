@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import warnings
 from pathlib import Path
+import types
 
-from kdeai.config import Config
+from conftest import build_config
 from kdeai.llm import batch_translate_plan
 from kdeai.prompt import build_prompt_payload
 
@@ -30,7 +31,7 @@ class _GlossaryMatch:
 
 def test_build_prompt_payload_includes_structured_fields() -> None:
     payload = build_prompt_payload(
-        config={"languages": {"source": "en"}},
+        config=build_config({"languages": {"source": "en"}}),
         msgctxt=None,
         msgid="File",
         msgid_plural=None,
@@ -127,29 +128,31 @@ def test_batch_translate_plan_updates_llm_entries() -> None:
         ],
     }
 
-    config = Config(
-        data={
+    config = build_config(
+        {
             "prompt": {"generation_model_id": "openrouter/x-ai/grok-4-fast"},
-            "markers": {
-                "ai_flag": "kdeai-ai",
-                "comment_prefixes": {
-                    "tool": "KDEAI:",
-                    "ai": "KDEAI-AI:",
-                    "tm": "KDEAI-TM:",
-                    "review": "KDEAI-REVIEW:",
-                },
-            },
             "apply": {
                 "tagging": {
-                    "llm": {"add_flags": ["fuzzy"], "add_ai_flag": True, "comment_prefix_key": "ai"}
+                    "llm": {
+                        "add_flags": ["fuzzy"],
+                        "add_ai_flag": True,
+                        "comment_prefix_key": "ai",
+                    }
                 }
             },
-        },
-        config_hash="test",
-        embed_policy_hash="test",
+        }
     )
 
-    batch_translate_plan(plan, config)
+    from kdeai import llm as kdellm
+    original_forward = kdellm.KDEAITranslator.forward
+    try:
+        def _fake_forward(self, _prompt):
+            return types.SimpleNamespace(translated_text="Datei", translated_plural="Dateien")
+
+        kdellm.KDEAITranslator.forward = _fake_forward
+        batch_translate_plan(plan, config)
+    finally:
+        kdellm.KDEAITranslator.forward = original_forward
 
     entries = plan["files"][0]["entries"]
     singular = entries[0]

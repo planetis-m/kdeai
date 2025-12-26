@@ -12,6 +12,7 @@ import tempfile
 import polib
 
 from kdeai import apply as kdeapply
+from kdeai.config import Config
 from kdeai import db as kdedb
 from kdeai import hash as kdehash
 from kdeai import locks
@@ -84,31 +85,18 @@ def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) 
     return 0
 
 
-def _marker_settings_from_config(config: Mapping[str, object]) -> tuple[str, str, str]:
-    ai_flag = kdeapply.DEFAULT_AI_FLAG
-    ai_prefix = "KDEAI-AI:"
-    review_prefix = "KDEAI-REVIEW:"
-    markers = config.get("markers") if isinstance(config, Mapping) else None
-    if not isinstance(markers, Mapping):
-        return ai_flag, ai_prefix, review_prefix
-    ai_flag = str(markers.get("ai_flag") or ai_flag)
-    comment_prefixes = markers.get("comment_prefixes")
-    if isinstance(comment_prefixes, Mapping):
-        ai_prefix = str(comment_prefixes.get("ai") or ai_prefix)
-        review_prefix = str(comment_prefixes.get("review") or review_prefix)
-    return ai_flag, ai_prefix, review_prefix
+def _marker_settings_from_config(config: Config) -> tuple[str, str, str]:
+    markers = config.markers
+    return (
+        markers.ai_flag,
+        markers.comment_prefixes.ai,
+        markers.comment_prefixes.review,
+    )
 
 
-def _selection_settings(config: Mapping[str, object]) -> tuple[list[str], bool]:
-    tm = config.get("tm") if isinstance(config, Mapping) else None
-    selection = tm.get("selection") if isinstance(tm, Mapping) else None
-    order = selection.get("review_status_order") if isinstance(selection, Mapping) else None
-    if isinstance(order, Sequence) and not isinstance(order, (str, bytes)):
-        review_status_order = [str(item) for item in order]
-    else:
-        review_status_order = list(DEFAULT_REVIEW_STATUS_ORDER)
-    prefer_human = bool(selection.get("prefer_human", True)) if isinstance(selection, Mapping) else True
-    return review_status_order, prefer_human
+def _selection_settings(config: Config) -> tuple[list[str], bool]:
+    selection = config.tm.selection
+    return list(selection.review_status_order), bool(selection.prefer_human)
 
 
 def _selection_key(
@@ -159,16 +147,13 @@ def _iter_po_paths(project_root: Path, raw_paths: Optional[list[Path]]) -> list[
     return results
 
 
-def _lang_from_po(po_file: polib.POFile, config: Mapping[str, object]) -> str:
+def _lang_from_po(po_file: polib.POFile, config: Config) -> str:
     language = po_file.metadata.get("Language") if po_file else None
     if language:
         return str(language).strip()
-    languages = config.get("languages") if isinstance(config, Mapping) else None
-    if isinstance(languages, Mapping):
-        targets = languages.get("targets")
-        if isinstance(targets, Sequence) and not isinstance(targets, (str, bytes)):
-            if len(targets) == 1:
-                return str(targets[0])
+    targets = config.languages.targets
+    if len(targets) == 1:
+        return str(targets[0])
     return ""
 
 
@@ -189,7 +174,7 @@ def build_reference_snapshot(
     *,
     project_id: str,
     path_casefold: bool,
-    config: Mapping[str, object],
+    config: Config,
     config_hash: str,
     paths: Optional[list[Path]] = None,
     label: str | None = None,

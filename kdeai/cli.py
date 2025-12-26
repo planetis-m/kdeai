@@ -15,6 +15,7 @@ import click
 
 from kdeai import apply as kdeapply
 from kdeai import config as kdeconfig
+from kdeai.config import Config, EmbeddingPolicy
 from kdeai import db as kdedb
 from kdeai import doctor as kdedoctor
 from kdeai import examples as kdeexamples
@@ -26,6 +27,7 @@ from kdeai import plan as kdeplan
 from kdeai import reference as kderef
 from kdeai import snapshot
 from kdeai import workspace_tm
+from kdeai.project import Project
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 reference_app = typer.Typer(no_args_is_help=True)
@@ -209,16 +211,11 @@ def _next_pointer_id(pointer_path: Path, key: str) -> int:
     return pointer_id + 1
 
 
-def _examples_embed_policy(config: dict) -> dict[str, object] | None:
-    prompt = config.get("prompt") if isinstance(config, dict) else None
-    examples_cfg = prompt.get("examples") if isinstance(prompt, dict) else None
-    policy = examples_cfg.get("embedding_policy") if isinstance(examples_cfg, dict) else None
-    if not isinstance(policy, dict):
-        return None
-    return policy
+def _examples_embed_policy(config: Config) -> EmbeddingPolicy:
+    return config.prompt.examples.embedding_policy
 
 
-def _require_embedder(policy: dict[str, object] | None) -> kdeexamples.EmbeddingFunc:
+def _require_embedder(policy: EmbeddingPolicy) -> kdeexamples.EmbeddingFunc:
     from kdeai.embed_client import compute_embedding
 
     def _embed(texts: Sequence[str]) -> list[list[float]]:
@@ -228,26 +225,17 @@ def _require_embedder(policy: dict[str, object] | None) -> kdeexamples.Embedding
 
 
 def _examples_mode_from_config(
-    config: dict,
+    config: Config,
     override: ExamplesMode | None,
 ) -> ExamplesMode:
     if override is not None:
         return override
-    prompt = config.get("prompt") if isinstance(config, dict) else None
-    examples_cfg = prompt.get("examples") if isinstance(prompt, dict) else None
-    mode_default = (
-        examples_cfg.get("mode_default")
-        if isinstance(examples_cfg, dict)
-        else None
-    )
-    if not mode_default:
-        return "auto"
-    return str(mode_default)
+    return str(config.prompt.examples.mode_default or "auto")
 
 
 def _maybe_embedder(
     examples_mode: ExamplesMode,
-    policy: dict[str, object] | None,
+    policy: EmbeddingPolicy,
 ) -> kdeexamples.EmbeddingFunc | None:
     if examples_mode == "off":
         return None
@@ -266,58 +254,28 @@ def _sqlite_vector_path(project_root: Path) -> str | None:
     return None
 
 
-def _glossary_normalization_id(config: dict) -> str:
-    prompt = config.get("prompt") if isinstance(config, dict) else None
-    glossary_cfg = prompt.get("glossary") if isinstance(prompt, dict) else None
-    normalization = (
-        glossary_cfg.get("normalization_id")
-        if isinstance(glossary_cfg, dict)
-        else None
-    )
-    return str(normalization or kdeglo.NORMALIZATION_ID)
+def _glossary_normalization_id(config: Config) -> str:
+    return str(config.prompt.glossary.normalization_id or kdeglo.NORMALIZATION_ID)
 
 
-def _apply_defaults_from_config(config: dict) -> dict:
-    apply_cfg = config.get("apply") if isinstance(config, dict) else None
-    if not isinstance(apply_cfg, dict):
-        return {"mode": "strict", "overwrite": "conservative", "post_index": "off"}
+def _apply_defaults_from_config(config: Config) -> dict:
     return {
-        "mode": str(apply_cfg.get("mode_default") or "strict"),
-        "overwrite": str(apply_cfg.get("overwrite_default") or "conservative"),
-        "post_index": str(apply_cfg.get("post_index_default") or "off"),
+        "mode": str(config.apply.mode_default),
+        "overwrite": str(config.apply.overwrite_default),
+        "post_index": "off",
     }
 
 
-def _marker_settings_from_config(config: dict) -> tuple[list[str], list[str], str]:
-    markers = config.get("markers") if isinstance(config, dict) else None
-    if not isinstance(markers, dict):
-        return kdeapply.DEFAULT_MARKER_FLAGS, kdeapply.DEFAULT_COMMENT_PREFIXES, kdeapply.DEFAULT_AI_FLAG
-    ai_flag = str(markers.get("ai_flag") or kdeapply.DEFAULT_AI_FLAG)
-    comment_prefixes = markers.get("comment_prefixes")
-    if isinstance(comment_prefixes, dict):
-        ordered = []
-        for key in ("tool", "ai", "tm", "review"):
-            value = comment_prefixes.get(key)
-            if value:
-                ordered.append(str(value))
-        if ordered:
-            return kdeapply.DEFAULT_MARKER_FLAGS, ordered, ai_flag
-    return kdeapply.DEFAULT_MARKER_FLAGS, kdeapply.DEFAULT_COMMENT_PREFIXES, ai_flag
+def _marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str]:
+    markers = config.markers
+    prefixes = markers.comment_prefixes
+    ordered = [prefixes.tool, prefixes.ai, prefixes.tm, prefixes.review]
+    return kdeapply.DEFAULT_MARKER_FLAGS, ordered, markers.ai_flag
 
 
-def _workspace_tm_settings(config: dict) -> tuple[int, str]:
-    sqlite_cfg = config.get("sqlite") if isinstance(config, dict) else None
-    workspace_cfg = sqlite_cfg.get("workspace_tm") if isinstance(sqlite_cfg, dict) else None
-    busy_timeout_ms = 50
-    synchronous = "NORMAL"
-    if isinstance(workspace_cfg, dict):
-        synchronous = str(workspace_cfg.get("synchronous", synchronous)).upper()
-        timeout_cfg = workspace_cfg.get("busy_timeout_ms")
-        if isinstance(timeout_cfg, dict):
-            busy_timeout_ms = int(timeout_cfg.get("write", busy_timeout_ms))
-        elif isinstance(timeout_cfg, int):
-            busy_timeout_ms = int(timeout_cfg)
-    return busy_timeout_ms, synchronous
+def _workspace_tm_settings(config: Config) -> tuple[int, str]:
+    workspace_cfg = config.sqlite.workspace_tm
+    return int(workspace_cfg.busy_timeout_ms.write), str(workspace_cfg.synchronous).upper()
 
 
 def _ensure_workspace_db(
@@ -325,12 +283,12 @@ def _ensure_workspace_db(
     *,
     project_id: str,
     config_hash: str,
-    config_data: dict,
+    config: Config,
 ):
     db_path = project_root / ".kdeai" / "cache" / "workspace.tm.sqlite"
     created = not db_path.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    busy_timeout_ms, synchronous = _workspace_tm_settings(config_data)
+    busy_timeout_ms, synchronous = _workspace_tm_settings(config)
     conn = kdedb.connect_workspace_tm(
         db_path,
         busy_timeout_ms=busy_timeout_ms,
@@ -390,21 +348,21 @@ def plan(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = _load_project(project_root)
-    config = kdeconfig.load_config_from_root(project_root)
+    project = Project.load(project_root)
+    config = project.config
     _ = cache_write
     cache_mode = cache or "on"
-    resolved_examples_mode = _examples_mode_from_config(config.data, examples)
+    resolved_examples_mode = _examples_mode_from_config(config, examples)
     embedder = _maybe_embedder(
         resolved_examples_mode,
-        _examples_embed_policy(config.data),
+        _examples_embed_policy(config),
     )
     sqlite_vector_path = _sqlite_vector_path(project_root)
-    path_casefold = bool(project.get("path_casefold", os.name == "nt"))
+    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
-        project_id=str(project["project_id"]),
-        config=config.data,
+        project_id=str(project.project_data["project_id"]),
+        config=config,
         config_hash=config.config_hash,
         embed_policy_hash=config.embed_policy_hash,
         lang=lang,
@@ -420,20 +378,21 @@ def plan(
         for path in _iter_po_paths(project_root, paths):
             file_draft = kdeplan.generate_plan_for_file(
                 project_root=project_root,
-                project_id=str(project["project_id"]),
+                project_id=str(project.project_data["project_id"]),
                 path=path,
                 path_casefold=path_casefold,
                 builder=builder,
                 config=config,
+                run_llm=False,
             )
             files_payload.append(file_draft)
     finally:
         builder.close()
 
-    apply_cfg = _apply_defaults_from_config(config.data)
+    apply_cfg = _apply_defaults_from_config(config)
     plan_payload = {
         "format": kdeplan.PLAN_FORMAT_VERSION,
-        "project_id": str(project["project_id"]),
+        "project_id": str(project.project_data["project_id"]),
         "config_hash": config.config_hash,
         "lang": lang,
         "marker_flags": list(builder.marker_flags),
@@ -466,7 +425,7 @@ def apply(
     plan = kdeplan.load_plan(plan_path)
     post_index_flag = post_index == "on"
     workspace_conn = None
-    config_data = None
+    config = None
 
     project = _load_project(project_root)
     project_id = str(plan.get("project_id") or project.get("project_id") or "")
@@ -479,13 +438,12 @@ def apply(
             typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
             post_index_flag = False
         else:
-            config_data = config.data
             try:
                 workspace_conn = _ensure_workspace_db(
                     project_root,
                     project_id=str(project["project_id"]),
                     config_hash=config.config_hash,
-                    config_data=config.data,
+                    config=config,
                 )
             except Exception as exc:
                 typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
@@ -565,7 +523,7 @@ def apply(
                         sha256=sha256_hex,
                         mtime_ns=stat.st_mtime_ns,
                         size=stat.st_size,
-                        config=config_data,
+                        config=config,
                     )
                 except Exception as exc:
                     post_index_warnings.append(f"post-index failed for {file_path}: {exc}")
@@ -606,15 +564,15 @@ def translate(
     config = kdeconfig.load_config_from_root(project_root)
     _ = cache_write
     cache_mode = cache or "on"
-    resolved_examples_mode = _examples_mode_from_config(config.data, examples)
+    resolved_examples_mode = _examples_mode_from_config(config, examples)
     embedder = _maybe_embedder(
         resolved_examples_mode,
-        _examples_embed_policy(config.data),
+        _examples_embed_policy(config),
     )
     sqlite_vector_path = _sqlite_vector_path(project_root)
     path_casefold = bool(project.get("path_casefold", os.name == "nt"))
 
-    apply_defaults = _apply_defaults_from_config(config.data)
+    apply_defaults = _apply_defaults_from_config(config)
     selected_mode = str(apply_mode or apply_defaults.get("mode") or "strict")
     selected_overwrite = str(overwrite or apply_defaults.get("overwrite") or "conservative")
     post_index_flag = apply_defaults.get("post_index") == "on"
@@ -622,7 +580,7 @@ def translate(
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
         project_id=str(project["project_id"]),
-        config=config.data,
+        config=config,
         config_hash=config.config_hash,
         embed_policy_hash=config.embed_policy_hash,
         lang=lang,
@@ -648,7 +606,7 @@ def translate(
                 project_root,
                 project_id=str(project["project_id"]),
                 config_hash=config.config_hash,
-                config_data=config.data,
+                config=config,
             )
         except Exception as exc:
             typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
@@ -663,6 +621,7 @@ def translate(
                 path_casefold=path_casefold,
                 builder=builder,
                 config=config,
+                run_llm=True,
             )
 
             file_path = str(file_plan.get("file_path", ""))
@@ -714,7 +673,7 @@ def translate(
                             sha256=sha256_hex,
                             mtime_ns=stat.st_mtime_ns,
                             size=stat.st_size,
-                            config=config.data,
+                            config=config,
                         )
                     except Exception as exc:
                         warnings.append(f"post-index failed for {file_path}: {exc}")
@@ -776,7 +735,7 @@ def index(
         project_root,
         project_id=project_id,
         config_hash=config.config_hash,
-        config_data=config.data,
+        config=config,
     )
     try:
         for path in _iter_po_paths(project_root, paths):
@@ -790,7 +749,7 @@ def index(
                 locked = snapshot.locked_read_file(path, lock_path)
                 lang = _parse_lang_from_bytes(locked.bytes)
                 if not lang:
-                    targets = config.data.get("languages", {}).get("targets", [])
+                    targets = config.languages.targets
                     if len(targets) == 1:
                         lang = str(targets[0])
                 if not lang:
@@ -803,7 +762,7 @@ def index(
                     sha256=locked.sha256,
                     mtime_ns=locked.mtime_ns,
                     size=locked.size,
-                    config=config.data,
+                    config=config,
                 )
             except Exception as exc:
                 message = f"{relpath}: {exc}"
@@ -834,7 +793,7 @@ def reference_build(
             project_root,
             project_id=str(project["project_id"]),
             path_casefold=bool(project.get("path_casefold")),
-            config=config.data,
+            config=config,
             config_hash=config.config_hash,
             paths=paths,
             label=label,
@@ -874,8 +833,8 @@ def examples_build(
         raise typer.Exit(1)
 
     if lang == "all":
-        targets = config.data.get("languages", {}).get("targets", [])
-        if not isinstance(targets, list) or not targets:
+        targets = config.languages.targets
+        if not targets:
             typer.secho("No target languages configured.", err=True)
             raise typer.Exit(1)
         languages = [str(item) for item in targets]
@@ -910,7 +869,7 @@ def examples_build(
                 pass
 
         try:
-            embedder = _require_embedder(_examples_embed_policy(config.data))
+            embedder = _require_embedder(_examples_embed_policy(config))
         except Exception as exc:
             typer.secho(str(exc), err=True)
             raise typer.Exit(1) from exc
@@ -925,14 +884,14 @@ def examples_build(
                 project_root,
                 project_id=str(project["project_id"]),
                 config_hash=config.config_hash,
-                config_data=config.data,
+                config=config,
             )
             try:
                 kdeexamples.build_examples_db_from_workspace(
                     conn,
                     output_path=output_path,
                     lang=target_lang,
-                    config=config.data,
+                    config=config,
                     project_id=str(project["project_id"]),
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
@@ -960,7 +919,7 @@ def examples_build(
                     reference_conn,
                     output_path=output_path,
                     lang=target_lang,
-                    config=config.data,
+                    config=config,
                     project_id=str(project["project_id"]),
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
@@ -1025,7 +984,7 @@ def glossary_build(
                 expected_project_id=str(project["project_id"]),
                 expected_config_hash=config.config_hash,
                 expected_kind="glossary",
-                expected_normalization_id=_glossary_normalization_id(config.data),
+                expected_normalization_id=_glossary_normalization_id(config),
             )
             conn.close()
             typer.echo("Glossary cache already current.")
@@ -1055,7 +1014,7 @@ def glossary_build(
         kdeglossary_path = kdeglo.build_glossary_db(
             reference_conn,
             output_path=output_path,
-            config=config.data,
+            config=config,
             project_id=str(project["project_id"]),
             config_hash=config.config_hash,
         )
@@ -1106,7 +1065,7 @@ def gc(
             project_root,
             project_id=str(project["project_id"]),
             config_hash=config.config_hash,
-            config_data=config.data,
+            config=config,
             ttl_days=ttl_days,
         )
     except Exception as exc:

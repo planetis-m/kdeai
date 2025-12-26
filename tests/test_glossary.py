@@ -5,6 +5,7 @@ from pathlib import Path
 
 import spacy
 
+from conftest import build_config
 from kdeai import db as kdedb
 from kdeai import hash as kdehash
 from kdeai import glossary as kdeglo
@@ -240,15 +241,17 @@ class TestGlossaryMining(unittest.TestCase):
             file_sha256=file_sha256,
         )
 
-        config = {
-            "languages": {"source": "en"},
-            "prompt": {
-                "glossary": {
-                    "spacy_model": "en_core_web_sm",
-                    "normalization_id": kdeglo.NORMALIZATION_ID,
-                }
-            },
-        }
+        config = build_config(
+            {
+                "languages": {"source": "en"},
+                "prompt": {
+                    "glossary": {
+                        "spacy_model": "en_core_web_sm",
+                        "normalization_id": kdeglo.NORMALIZATION_ID,
+                    }
+                },
+            }
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "glossary.sqlite"

@@ -6,6 +6,7 @@ import json
 import sqlite3
 
 from kdeai import hash as kdehash
+from kdeai.config import Config
 
 DEFAULT_LOOKUP_SCOPES = ["session", "workspace", "reference"]
 
@@ -25,22 +26,16 @@ class TmCandidate:
 
 
 def _lookup_scopes(
-    config: Mapping[str, object] | None,
+    config: Config | None,
     lookup_scopes: Iterable[str] | None,
 ) -> list[str]:
     if lookup_scopes is not None:
         if isinstance(lookup_scopes, (list, tuple)):
             return [str(scope) for scope in lookup_scopes]
         return [str(lookup_scopes)]
-    if not config:
+    if config is None:
         return DEFAULT_LOOKUP_SCOPES
-    tm = config.get("tm") if isinstance(config, Mapping) else None
-    if not isinstance(tm, Mapping):
-        return DEFAULT_LOOKUP_SCOPES
-    scopes = tm.get("lookup_scopes")
-    if isinstance(scopes, (list, tuple)):
-        return [str(scope) for scope in scopes]
-    return DEFAULT_LOOKUP_SCOPES
+    return list(config.tm.lookup_scopes)
 
 
 def _parse_msgstr_plural(value: object) -> dict[str, str]:
@@ -182,7 +177,7 @@ def lookup_tm_exact(
     lang: str,
     *,
     has_plural: bool,
-    config: Mapping[str, object] | None = None,
+    config: Config | None = None,
     lookup_scopes: Iterable[str] | None = None,
     session_tm: Mapping[object, object] | None = None,
     workspace_conn: sqlite3.Connection | None = None,

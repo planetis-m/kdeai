@@ -1,85 +1,164 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+import hashlib
 import json
 
-from kdeai import hash as kdehash
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 
-@dataclass(frozen=True)
-class Config:
-    data: dict
-    config_hash: str
-    embed_policy_hash: str
+def compute_canonical_hash(data: dict) -> str:
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _require_mapping(value: object, label: str) -> dict:
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    return value
+class _BaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-def _normalize_embed_policy(config: dict) -> dict:
-    prompt = _require_mapping(config.get("prompt"), "prompt")
-    examples = _require_mapping(prompt.get("examples"), "prompt.examples")
-    policy = _require_mapping(examples.get("embedding_policy"), "prompt.examples.embedding_policy")
+class EmbeddingPolicy(_BaseModel):
+    model_id: StrictStr
+    dim: StrictInt = Field(gt=0)
+    distance: StrictStr
+    encoding: StrictStr
+    normalization: StrictStr
+    input_canonicalization: StrictStr
+    require_finite: StrictBool = True
 
-    required_keys = [
-        "model_id",
-        "dim",
-        "distance",
-        "encoding",
-        "input_canonicalization",
-        "normalization",
-    ]
-    missing = [key for key in required_keys if key not in policy]
-    if missing:
-        raise ValueError(f"embedding_policy missing required keys: {', '.join(missing)}")
+    @field_validator("distance")
+    @classmethod
+    def _distance_lowercase(cls, value: str) -> str:
+        lowered = value.lower()
+        if value != lowered:
+            raise ValueError("embedding_policy.distance must be lower-case")
+        return lowered
 
-    model_id = str(policy["model_id"])
-    dim = int(policy["dim"])
-    distance = str(policy["distance"]).lower()
-    encoding = str(policy["encoding"])
-    input_canonicalization = str(policy["input_canonicalization"])
-    normalization = str(policy["normalization"])
-    require_finite = policy.get("require_finite", True)
+    @field_validator("encoding")
+    @classmethod
+    def _encoding_value(cls, value: str) -> str:
+        if value != "float32_le":
+            raise ValueError("embedding_policy.encoding must be 'float32_le'")
+        return value
 
-    if encoding != "float32_le":
-        raise ValueError("embedding_policy.encoding must be 'float32_le'")
-    if input_canonicalization != "source_text_v1":
-        raise ValueError("embedding_policy.input_canonicalization must be 'source_text_v1'")
-
-    return {
-        "model_id": model_id,
-        "dim": dim,
-        "distance": distance,
-        "encoding": encoding,
-        "input_canonicalization": input_canonicalization,
-        "normalization": normalization,
-        "require_finite": bool(require_finite),
-    }
+    @field_validator("input_canonicalization")
+    @classmethod
+    def _input_canonicalization_value(cls, value: str) -> str:
+        if value != "source_text_v1":
+            raise ValueError("embedding_policy.input_canonicalization must be 'source_text_v1'")
+        return value
 
 
-def compute_config_hash(config: dict) -> str:
-    return kdehash.sha256_hex_text(kdehash.canonical_json(config))
+class ExamplesEligibility(_BaseModel):
+    min_review_status: StrictStr
+    allow_ai_generated: StrictBool
 
 
-def compute_embed_policy_hash(config: dict) -> str:
-    policy = _normalize_embed_policy(config)
-    return kdehash.sha256_hex_text(kdehash.canonical_json(policy))
+class ExamplesConfig(_BaseModel):
+    mode_default: StrictStr
+    lookup_scopes: list[StrictStr]
+    top_n: StrictInt = Field(gt=0)
+    embedding_policy: EmbeddingPolicy
+    eligibility: ExamplesEligibility
+
+
+class GlossaryConfig(_BaseModel):
+    mode_default: StrictStr
+    lookup_scopes: list[StrictStr]
+    spacy_model: StrictStr
+    normalization_id: StrictStr
+    max_terms: StrictInt = Field(gt=0)
+
+
+class PromptConfig(_BaseModel):
+    generation_model_id: StrictStr | None = None
+    examples: ExamplesConfig
+    glossary: GlossaryConfig
+
+
+class ApplyTaggingItem(_BaseModel):
+    add_flags: list[StrictStr]
+    add_ai_flag: StrictBool
+    comment_prefix_key: StrictStr
+
+
+class ApplyTagging(_BaseModel):
+    tm_copy: ApplyTaggingItem
+    llm: ApplyTaggingItem
+
+
+class ApplyConfig(_BaseModel):
+    mode_default: StrictStr
+    overwrite_default: StrictStr
+    tagging: ApplyTagging
+
+
+class CommentPrefixes(_BaseModel):
+    tool: StrictStr
+    ai: StrictStr
+    tm: StrictStr
+    review: StrictStr
+
+
+class MarkersConfig(_BaseModel):
+    ai_flag: StrictStr
+    comment_prefixes: CommentPrefixes
+
+
+class LanguagesConfig(_BaseModel):
+    source: StrictStr
+    targets: list[StrictStr]
+
+
+class TMSelection(_BaseModel):
+    review_status_order: list[StrictStr]
+    prefer_human: StrictBool
+
+
+class TMConfig(_BaseModel):
+    lookup_scopes: list[StrictStr]
+    selection: TMSelection
+
+
+class BusyTimeouts(_BaseModel):
+    read: StrictInt = Field(ge=0)
+    write: StrictInt = Field(ge=0)
+
+
+class WorkspaceTMConfig(_BaseModel):
+    synchronous: StrictStr
+    busy_timeout_ms: BusyTimeouts
+
+
+class SqliteConfig(_BaseModel):
+    workspace_tm: WorkspaceTMConfig
+
+
+class Config(_BaseModel):
+    format: Literal[2]
+    languages: LanguagesConfig
+    markers: MarkersConfig
+    tm: TMConfig
+    prompt: PromptConfig
+    apply: ApplyConfig
+    sqlite: SqliteConfig
+    config_hash: StrictStr = ""
+    embed_policy_hash: StrictStr = ""
+
+    def model_post_init(self, __context: object) -> None:
+        data = self.model_dump(mode="json", exclude={"config_hash", "embed_policy_hash"})
+        self.config_hash = compute_canonical_hash(data)
+        policy = self.prompt.examples.embedding_policy.model_dump(mode="json")
+        self.embed_policy_hash = compute_canonical_hash(policy)
+
+    @property
+    def data(self) -> dict:
+        return self.model_dump(mode="json", exclude={"config_hash", "embed_policy_hash"})
 
 
 def load_config(config_path: Path) -> Config:
-    config = _require_mapping(
-        json.loads(config_path.read_text(encoding="utf-8")),
-        "config",
-    )
-    return Config(
-        data=config,
-        config_hash=compute_config_hash(config),
-        embed_policy_hash=compute_embed_policy_hash(config),
-    )
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    return Config.model_validate(raw)
 
 
 def load_config_from_root(root: Path) -> Config:

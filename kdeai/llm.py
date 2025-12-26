@@ -4,7 +4,6 @@ from typing import Iterable, Mapping, MutableMapping, TypedDict
 
 import dspy
 
-from kdeai import apply as kdeapply
 from kdeai.config import Config
 from kdeai.llm_provider import configure_dspy
 from kdeai.prompt import PromptData
@@ -63,72 +62,26 @@ def _normalize_prompt_data(prompt: Mapping[str, object]) -> dict[str, str]:
 
 
 def _resolve_model_id(config: Config) -> str:
-    data = config.data
-    prompt_cfg = data.get("prompt") if isinstance(data, Mapping) else None
-    if isinstance(prompt_cfg, Mapping):
-        generation_model_id = prompt_cfg.get("generation_model_id")
-        if isinstance(generation_model_id, str) and generation_model_id.strip():
-            return generation_model_id
-        embedding_policy = prompt_cfg.get("embedding_policy")
-        if isinstance(embedding_policy, Mapping):
-            model_id = embedding_policy.get("model_id")
-            if isinstance(model_id, str) and model_id.strip():
-                return model_id
-        examples_cfg = prompt_cfg.get("examples")
-        if isinstance(examples_cfg, Mapping):
-            examples_policy = examples_cfg.get("embedding_policy")
-            if isinstance(examples_policy, Mapping):
-                model_id = examples_policy.get("model_id")
-                if isinstance(model_id, str) and model_id.strip():
-                    return model_id
-    return "gpt-4o"
+    generation_model_id = config.prompt.generation_model_id
+    if generation_model_id:
+        return str(generation_model_id)
+    raise ValueError("prompt.generation_model_id missing")
 
 
-def _comment_prefix(config: Mapping[str, object], key: str) -> str:
-    defaults = {
-        "tool": "KDEAI:",
-        "ai": "KDEAI-AI:",
-        "tm": "KDEAI-TM:",
-        "review": "KDEAI-REVIEW:",
-    }
-    markers = config.get("markers") if isinstance(config, Mapping) else None
-    if isinstance(markers, Mapping):
-        comment_prefixes = markers.get("comment_prefixes")
-        if isinstance(comment_prefixes, Mapping):
-            value = comment_prefixes.get(key)
-            if value:
-                return str(value)
-    return defaults.get(key, "KDEAI-AI:")
+def _comment_prefix(config: Config, key: str) -> str:
+    comment_prefixes = config.markers.comment_prefixes
+    return getattr(comment_prefixes, key, comment_prefixes.ai)
 
 
-def _ai_flag(config: Mapping[str, object]) -> str:
-    markers = config.get("markers") if isinstance(config, Mapping) else None
-    if isinstance(markers, Mapping):
-        ai_flag = markers.get("ai_flag")
-        if ai_flag:
-            return str(ai_flag)
-    return kdeapply.DEFAULT_AI_FLAG
+def _ai_flag(config: Config) -> str:
+    return config.markers.ai_flag
 
 
-def _llm_tagging_settings(config: Mapping[str, object]) -> tuple[list[str], bool, str, str]:
-    apply_cfg = config.get("apply") if isinstance(config, Mapping) else None
-    tagging = apply_cfg.get("tagging") if isinstance(apply_cfg, Mapping) else None
-    llm_cfg = tagging.get("llm") if isinstance(tagging, Mapping) else None
-
-    if isinstance(llm_cfg, Mapping):
-        add_flags_raw = llm_cfg.get("add_flags", ["fuzzy"])
-        add_flags = (
-            [str(flag) for flag in add_flags_raw]
-            if isinstance(add_flags_raw, Iterable) and not isinstance(add_flags_raw, (str, bytes))
-            else ["fuzzy"]
-        )
-        add_ai_flag = bool(llm_cfg.get("add_ai_flag", True))
-        comment_prefix_key = str(llm_cfg.get("comment_prefix_key") or "ai")
-    else:
-        add_flags = ["fuzzy"]
-        add_ai_flag = True
-        comment_prefix_key = "ai"
-
+def _llm_tagging_settings(config: Config) -> tuple[list[str], bool, str, str]:
+    llm_cfg = config.apply.tagging.llm
+    add_flags = list(llm_cfg.add_flags)
+    add_ai_flag = bool(llm_cfg.add_ai_flag)
+    comment_prefix_key = str(llm_cfg.comment_prefix_key or "ai")
     prefix = _comment_prefix(config, comment_prefix_key)
     ai_flag = _ai_flag(config)
     return add_flags, add_ai_flag, ai_flag, prefix
@@ -149,7 +102,7 @@ def _merge_unique(values: Iterable[str], extra: Iterable[str]) -> list[str]:
 def _apply_llm_tagging(
     entry: MutableMapping[str, object],
     *,
-    config: Mapping[str, object],
+    config: Config,
     model_id: str,
 ) -> None:
     add_flags, add_ai_flag, ai_flag, comment_prefix = _llm_tagging_settings(config)
@@ -282,7 +235,7 @@ def batch_translate(
         )
         entry["prompt"] = prompt_payload
         entry["action"] = "llm"
-        _apply_llm_tagging(entry, config=config.data, model_id=model_id)
+        _apply_llm_tagging(entry, config=config, model_id=model_id)
         updated.append(entry)
 
     return updated
@@ -326,6 +279,6 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
                 translated_text=translated_text,
                 translated_plural=translated_plural,
             )
-            _apply_llm_tagging(entry, config=config.data, model_id=model_id)
+            _apply_llm_tagging(entry, config=config, model_id=model_id)
 
     return plan

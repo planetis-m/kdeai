@@ -5,7 +5,9 @@ from pathlib import Path
 
 import dspy
 
-from kdeai.config import Config
+import pytest
+
+from conftest import build_config
 from kdeai.llm_provider import configure_dspy
 
 
@@ -29,8 +31,8 @@ def test_configure_dspy_uses_generation_model_id() -> None:
     _load_env_if_missing(["OPENROUTER_API_KEY"])
     assert os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY must be set for DSPy usage"
 
-    config = Config(
-        data={
+    config = build_config(
+        {
             "prompt": {
                 "generation_model_id": "openrouter/x-ai/grok-4-fast",
                 "examples": {
@@ -39,9 +41,7 @@ def test_configure_dspy_uses_generation_model_id() -> None:
                     }
                 },
             }
-        },
-        config_hash="test",
-        embed_policy_hash="test",
+        }
     )
 
     configure_dspy(config)
@@ -51,26 +51,22 @@ def test_configure_dspy_uses_generation_model_id() -> None:
     assert getattr(lm, "model", None) == "openrouter/x-ai/grok-4-fast"
 
 
-def test_configure_dspy_falls_back_to_examples_embedding_model() -> None:
+def test_configure_dspy_requires_generation_model_id() -> None:
     _load_env_if_missing(["OPENROUTER_API_KEY"])
     assert os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY must be set for DSPy usage"
 
-    config = Config(
-        data={
+    config = build_config(
+        {
             "prompt": {
+                "generation_model_id": None,
                 "examples": {
                     "embedding_policy": {
                         "model_id": "openrouter/google/gemini-embedding-001",
                     }
-                }
+                },
             }
-        },
-        config_hash="test",
-        embed_policy_hash="test",
+        }
     )
 
-    configure_dspy(config)
-
-    lm = dspy.settings.lm
-    assert lm is not None
-    assert getattr(lm, "model", None) == "openrouter/google/gemini-embedding-001"
+    with pytest.raises(ValueError, match="prompt.generation_model_id missing"):
+        configure_dspy(config)

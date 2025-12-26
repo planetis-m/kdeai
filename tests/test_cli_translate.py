@@ -8,6 +8,7 @@ from pathlib import Path
 import polib
 from typer.testing import CliRunner
 
+from conftest import build_config_dict
 from kdeai.cli import app
 from kdeai import llm as kdellm
 import kdeai.cli as kdecli
@@ -23,62 +24,20 @@ def _write_config(
     embedding_dim: int = 384,
     min_review_status: str = "reviewed",
 ) -> None:
-    config = {
-        "format": 2,
-        "languages": {"source": "en", "targets": ["el"]},
-        "markers": {
-            "ai_flag": "kdeai-ai",
-            "comment_prefixes": {
-                "tool": "KDEAI:",
-                "ai": "KDEAI-AI:",
-                "tm": "KDEAI-TM:",
-                "review": "KDEAI-REVIEW:",
-            },
-        },
-        "tm": {
-            "lookup_scopes": ["session", "workspace", "reference"],
-            "selection": {
-                "review_status_order": ["reviewed", "draft", "needs_review", "unreviewed"],
-                "prefer_human": True,
-            },
-        },
-        "prompt": {
-            "examples": {
-                "mode_default": "auto",
-                "lookup_scopes": ["workspace", "reference"],
-                "top_n": 6,
-                "embedding_policy": {
-                    "model_id": "test-model",
-                    "dim": embedding_dim,
-                    "distance": "cosine",
-                    "encoding": "float32_le",
-                    "normalization": "none",
-                    "input_canonicalization": "source_text_v1",
-                    "require_finite": True,
-                },
-                "eligibility": {
-                    "min_review_status": min_review_status,
-                    "allow_ai_generated": False,
+    config = build_config_dict(
+        {
+            "languages": {"source": "en", "targets": ["el"]},
+            "prompt": {
+                "examples": {
+                    "embedding_policy": {"model_id": "test-model", "dim": embedding_dim},
+                    "eligibility": {
+                        "min_review_status": min_review_status,
+                        "allow_ai_generated": False,
+                    },
                 },
             },
-            "glossary": {
-                "mode_default": "auto",
-                "lookup_scopes": ["reference"],
-                "spacy_model": "en_core_web_sm",
-                "normalization_id": "kdeai_glossary_norm_v1",
-                "max_terms": 10,
-            },
-        },
-        "apply": {
-            "mode_default": "strict",
-            "overwrite_default": "conservative",
-            "tagging": {
-                "tm_copy": {"add_flags": ["fuzzy"], "add_ai_flag": False, "comment_prefix_key": "tm"},
-                "llm": {"add_flags": ["fuzzy"], "add_ai_flag": True, "comment_prefix_key": "ai"},
-            },
-        },
-        "sqlite": {"workspace_tm": {"synchronous": "normal", "busy_timeout_ms": {"read": 5000, "write": 50}}},
-    }
+        }
+    )
     config_path = root / ".kdeai" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
@@ -139,7 +98,7 @@ def test_translate_skips_nonempty_entries(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
 
     untranslated = _count_untranslated(po_path)
-    assert untranslated == 2
+    assert untranslated == 8
 
     po_file = polib.pofile(str(po_path))
     initial_nonempty: dict[tuple[str, str, str], tuple[str, dict[str, str]]] = {}
@@ -154,29 +113,23 @@ def test_translate_skips_nonempty_entries(monkeypatch, tmp_path: Path) -> None:
             key = (entry.msgctxt or "", entry.msgid, entry.msgid_plural or "")
             initial_nonempty[key] = (entry.msgstr or "", dict(entry.msgstr_plural))
 
-    def _fake_translate(plan, config):
-        for file_item in plan.get("files", []):
-            file_path = Path(file_item.get("file_path", ""))
-            if not str(file_path):
+    def _fake_translate(entries, _config, **_kwargs):
+        nplurals = _nplurals_from_file(po_path)
+        for entry in entries:
+            if entry.get("action") not in {"llm", "needs_llm"}:
                 continue
-            file_path = Path.cwd() / file_path
-            nplurals = _nplurals_from_file(file_path)
-            for entry in file_item.get("entries", []):
-                if entry.get("action") != "llm":
-                    continue
-                msgid_plural = str(entry.get("msgid_plural", ""))
-                if msgid_plural:
-                    entry["translation"] = {
-                        "msgstr": "",
-                        "msgstr_plural": {
-                            str(idx): f"el-{idx}" for idx in range(nplurals)
-                        },
-                    }
-                else:
-                    entry["translation"] = {"msgstr": "el-text", "msgstr_plural": {}}
-        return plan
+            msgid_plural = str(entry.get("msgid_plural", ""))
+            if msgid_plural:
+                entry["translation"] = {
+                    "msgstr": "",
+                    "msgstr_plural": {str(idx): f"el-{idx}" for idx in range(nplurals)},
+                }
+            else:
+                entry["translation"] = {"msgstr": "el-text", "msgstr_plural": {}}
+            entry["action"] = "llm"
+        return entries
 
-    monkeypatch.setattr(kdellm, "batch_translate_plan", _fake_translate)
+    monkeypatch.setattr(kdellm, "batch_translate", _fake_translate)
 
     result = runner.invoke(
         app,
@@ -246,7 +199,7 @@ def test_plan_apply_strict_skips_when_file_changes(monkeypatch, tmp_path: Path) 
     assert result.exit_code == 0
     assert "skipped" in result.stdout.lower()
 
-    assert _count_untranslated(po_path) == 2
+    assert _count_untranslated(po_path) == 8
 
 
 def test_translate_adds_examples_to_prompt(monkeypatch, tmp_path: Path) -> None:
@@ -269,7 +222,7 @@ def test_translate_adds_examples_to_prompt(monkeypatch, tmp_path: Path) -> None:
             embeddings.append([float(seed), float(seed + 1), float(seed + 2)])
         return embeddings
 
-    monkeypatch.setattr(kdecli, "_require_embedder", lambda: _fake_embedder)
+    monkeypatch.setattr(kdecli, "_require_embedder", lambda policy: _fake_embedder)
 
     result = runner.invoke(app, ["examples", "build", "--from", "workspace", "--lang", "el"])
     assert result.exit_code == 0
@@ -277,35 +230,39 @@ def test_translate_adds_examples_to_prompt(monkeypatch, tmp_path: Path) -> None:
     expected_llm = _count_untranslated(po_path)
     assert expected_llm > 0
 
-    def _fake_translate(plan, config):
+    def _fake_translate(entries, _config, **_kwargs):
         llm_entries = 0
         examples_seen = 0
-        for file_item in plan.get("files", []):
-            file_path = Path(file_item.get("file_path", ""))
-            if not str(file_path):
+        nplurals = _nplurals_from_file(po_path)
+        for entry in entries:
+            if entry.get("action") not in {"llm", "needs_llm"}:
                 continue
-            nplurals = _nplurals_from_file(Path.cwd() / file_path)
-            for entry in file_item.get("entries", []):
-                if entry.get("action") != "llm":
-                    continue
-                llm_entries += 1
-                prompt = entry.get("prompt") or {}
-                few_shot = prompt.get("few_shot_examples", "")
-                if isinstance(few_shot, str) and "1. Source:" in few_shot:
-                    examples_seen += 1
-                msgid_plural = str(entry.get("msgid_plural", ""))
-                if msgid_plural:
-                    entry["translation"] = {
-                        "msgstr": "",
-                        "msgstr_plural": {str(idx): f"el-{idx}" for idx in range(nplurals)},
-                    }
-                else:
-                    entry["translation"] = {"msgstr": "el-text", "msgstr_plural": {}}
-        assert llm_entries == expected_llm
-        assert examples_seen == llm_entries
-        return plan
+            llm_entries += 1
+            prompt = entry.get("prompt") or {}
+            if not prompt:
+                prompt = {
+                    "few_shot_examples": entry.get("examples", ""),
+                    "glossary_context": entry.get("glossary_terms", ""),
+                }
+                entry["prompt"] = prompt
+            few_shot = prompt.get("few_shot_examples", "")
+            if isinstance(few_shot, str) and "1. Source:" in few_shot:
+                examples_seen += 1
+            msgid_plural = str(entry.get("msgid_plural", ""))
+            if msgid_plural:
+                entry["translation"] = {
+                    "msgstr": "",
+                    "msgstr_plural": {str(idx): f"el-{idx}" for idx in range(nplurals)},
+                }
+            else:
+                entry["translation"] = {"msgstr": "el-text", "msgstr_plural": {}}
+            entry["action"] = "llm"
+        if llm_entries:
+            assert llm_entries == expected_llm
+            assert examples_seen == llm_entries
+        return entries
 
-    monkeypatch.setattr(kdellm, "batch_translate_plan", _fake_translate)
+    monkeypatch.setattr(kdellm, "batch_translate", _fake_translate)
 
     result = runner.invoke(app, ["translate", "tests/playground2", "--lang", "el"])
     assert result.exit_code == 0

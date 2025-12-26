@@ -3,9 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping
-
 from kdeai import db as kdedb
+from kdeai.config import Config
 
 
 @dataclass(frozen=True)
@@ -17,18 +16,10 @@ class GcReport:
     best_translations_deleted: int
 
 
-def _workspace_tm_settings(config: Mapping[str, object]) -> tuple[int, str]:
-    sqlite_cfg = config.get("sqlite") if isinstance(config, Mapping) else None
-    workspace_cfg = sqlite_cfg.get("workspace_tm") if isinstance(sqlite_cfg, Mapping) else None
-    busy_timeout_ms = 50
-    synchronous = "NORMAL"
-    if isinstance(workspace_cfg, Mapping):
-        synchronous = str(workspace_cfg.get("synchronous", synchronous)).upper()
-        timeout_cfg = workspace_cfg.get("busy_timeout_ms")
-        if isinstance(timeout_cfg, dict):
-            busy_timeout_ms = int(timeout_cfg.get("write", busy_timeout_ms))
-        elif isinstance(timeout_cfg, int):
-            busy_timeout_ms = int(timeout_cfg)
+def _workspace_tm_settings(config: Config) -> tuple[int, str]:
+    workspace_cfg = config.sqlite.workspace_tm
+    busy_timeout_ms = int(workspace_cfg.busy_timeout_ms.write)
+    synchronous = str(workspace_cfg.synchronous).upper()
     return busy_timeout_ms, synchronous
 
 
@@ -37,7 +28,7 @@ def gc_workspace_tm(
     *,
     project_id: str,
     config_hash: str,
-    config_data: Mapping[str, object],
+    config: Config,
     ttl_days: int,
 ) -> GcReport:
     if ttl_days <= 0:
@@ -46,7 +37,7 @@ def gc_workspace_tm(
     if not db_path.exists():
         raise FileNotFoundError(f"workspace tm not found: {db_path}")
 
-    busy_timeout_ms, synchronous = _workspace_tm_settings(config_data)
+    busy_timeout_ms, synchronous = _workspace_tm_settings(config)
     conn = kdedb.connect_workspace_tm(
         db_path,
         busy_timeout_ms=busy_timeout_ms,

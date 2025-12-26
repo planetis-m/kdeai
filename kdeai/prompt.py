@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence, TYPE_CHECKING, TypedDict
 
 from kdeai import hash as kdehash
+from kdeai.config import Config
 
 class PromptData(TypedDict):
     source_context: str
@@ -139,7 +140,7 @@ def _user_prompt(
 
 def build_prompt_payload(
     *,
-    config: Mapping[str, object],
+    config: Config,
     msgctxt: str | None,
     msgid: str,
     msgid_plural: str | None,
@@ -149,10 +150,7 @@ def build_prompt_payload(
 ) -> PromptData:
     if not target_lang:
         raise ValueError("target_lang missing")
-    languages = config.get("languages") if isinstance(config, Mapping) else None
-    if not isinstance(languages, Mapping):
-        raise ValueError("languages config missing")
-    source_lang = str(languages.get("source") or "")
+    source_lang = config.languages.source
     if not source_lang:
         raise ValueError("languages.source missing")
 

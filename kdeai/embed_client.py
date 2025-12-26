@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Sequence
 import math
 import os
 
@@ -8,9 +8,11 @@ import dspy
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from kdeai.config import EmbeddingPolicy
+
 load_dotenv()
 
-_DEFAULT_MODEL_ID = "google/gemini-embedding-001"
+_OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 _CLIENT: OpenAI | None = None
 
 
@@ -41,8 +43,7 @@ def _get_client() -> OpenAI:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY must be set for embeddings")
-    api_base = os.getenv("OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1"
-    _CLIENT = OpenAI(api_key=api_key, base_url=api_base)
+    _CLIENT = OpenAI(api_key=api_key, base_url=_OPENROUTER_API_BASE)
     return _CLIENT
 
 
@@ -56,14 +57,12 @@ def _normalize(values: list[float]) -> list[float]:
 def _openai_embed(
     texts: Sequence[str],
     *,
-    policy: Mapping[str, object] | None,
+    policy: EmbeddingPolicy,
 ) -> list[list[float]]:
     client = _get_client()
-    model_id = os.getenv("KDEAI_EMBED_MODEL", _DEFAULT_MODEL_ID)
-    policy = dict(policy or {})
-    normalization = str(policy.get("normalization", "none"))
-    target_dim = policy.get("dim")
-    target_dim = int(target_dim) if target_dim is not None else None
+    model_id = policy.model_id
+    normalization = policy.normalization
+    target_dim = policy.dim
     request_kwargs = {}
     if target_dim is not None:
         request_kwargs["dimensions"] = target_dim
@@ -76,7 +75,7 @@ def _openai_embed(
     embeddings: list[list[float]] = []
     for item in data:
         values = _extract_embedding(item)
-        if target_dim is not None and len(values) != target_dim:
+        if len(values) != target_dim:
             if len(values) < target_dim:
                 raise ValueError(
                     f"embedding dim mismatch: expected {target_dim}, got {len(values)}"
@@ -88,14 +87,14 @@ def _openai_embed(
     return embeddings
 
 
-def _get_embedder(policy: Mapping[str, object] | None) -> dspy.Embedder:
+def _get_embedder(policy: EmbeddingPolicy) -> dspy.Embedder:
     return dspy.Embedder(lambda texts: _openai_embed(texts, policy=policy))
 
 
 def compute_embeddings(
     texts: Sequence[str],
     *,
-    policy: Mapping[str, object] | None = None,
+    policy: EmbeddingPolicy,
 ) -> list[list[float]]:
     embedder = _get_embedder(policy)
     embeddings = embedder(list(texts))
@@ -109,7 +108,7 @@ def compute_embeddings(
 def compute_embedding(
     text: str,
     *,
-    policy: Mapping[str, object] | None = None,
+    policy: EmbeddingPolicy,
 ) -> list[float]:
     embeddings = compute_embeddings([text], policy=policy)
     if not embeddings:

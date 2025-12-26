@@ -2,30 +2,27 @@ import math
 import sqlite3
 import unittest
 
+from conftest import build_config
 from kdeai import examples
 
 
 def _base_config(*, allow_ai_generated=False, min_review_status="reviewed"):
-    return {
-        "tm": {"selection": {"review_status_order": ["reviewed", "draft"]}},
-        "prompt": {
-            "examples": {
-                "embedding_policy": {
-                    "model_id": "provider/model@version",
-                    "dim": 2,
-                    "distance": "cosine",
-                    "encoding": "float32_le",
-                    "input_canonicalization": "source_text_v1",
-                    "normalization": "none",
-                    "require_finite": True,
-                },
-                "eligibility": {
-                    "min_review_status": min_review_status,
-                    "allow_ai_generated": allow_ai_generated,
-                },
-            }
-        },
-    }
+    return build_config(
+        {
+            "tm": {"selection": {"review_status_order": ["reviewed", "draft"]}},
+            "prompt": {
+                "examples": {
+                    "embedding_policy": {
+                        "dim": 2,
+                    },
+                    "eligibility": {
+                        "min_review_status": min_review_status,
+                        "allow_ai_generated": allow_ai_generated,
+                    },
+                }
+            },
+        }
+    )
 
 
 class TestExamplesEligibility(unittest.TestCase):

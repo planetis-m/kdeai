@@ -1,6 +1,7 @@
 import sqlite3
 import unittest
 
+from conftest import build_config
 from kdeai import db as kde_db
 from kdeai import hash as kdehash
 from kdeai import retrieve_tm
@@ -209,7 +210,7 @@ class TestTmRetrieval(unittest.TestCase):
             ),
         )
 
-        config = {"tm": {"lookup_scopes": ["reference", "workspace"]}}
+        config = build_config({"tm": {"lookup_scopes": ["reference", "workspace"]}})
         result = retrieve_tm.lookup_tm_exact(
             source_key,
             "de",

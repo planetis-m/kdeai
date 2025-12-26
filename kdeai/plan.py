@@ -12,6 +12,7 @@ import tempfile
 import polib
 
 from kdeai import apply as kdeapply
+from kdeai.config import Config
 from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import hash as kdehash
@@ -25,7 +26,6 @@ PLAN_FORMAT_VERSION = 1
 
 
 EmbeddingFunc = Callable[[Sequence[str]], Sequence[Sequence[float]]]
-DEFAULT_GLOSSARY_NORMALIZATION_ID = "kdeai_glossary_norm_v1"
 
 if TYPE_CHECKING:
     from kdeai import glossary as kdeglo
@@ -51,7 +51,7 @@ class PlanBuilder:
         *,
         project_root: Path,
         project_id: str,
-        config: Mapping[str, object],
+        config: Config,
         config_hash: str,
         embed_policy_hash: str,
         lang: str,
@@ -66,14 +66,9 @@ class PlanBuilder:
         self.config = config
         self.lang = lang
         self.session_tm = session_tm
-        self.marker_flags, self.comment_prefixes, self.ai_flag = _marker_settings_from_config(
-            config
-        )
+        self.marker_flags, self.comment_prefixes, self.ai_flag = _marker_settings_from_config(config)
         self.review_prefix = _review_prefix_from_config(config)
-        apply_cfg = config.get("apply") if isinstance(config, Mapping) else None
-        if not isinstance(apply_cfg, Mapping):
-            apply_cfg = {}
-        self.selected_overwrite = str(overwrite or apply_cfg.get("overwrite_default", "conservative"))
+        self.selected_overwrite = str(overwrite or config.apply.overwrite_default)
         self.assets = _build_assets(
             project_root=project_root,
             project_id=project_id,
@@ -207,7 +202,8 @@ def generate_plan_for_file(
     path: Path,
     path_casefold: bool,
     builder: PlanBuilder,
-    config: object,
+    config: Config,
+    run_llm: bool = False,
 ) -> DraftPlan:
     relpath = _normalize_relpath(project_root, path)
     relpath_key = _relpath_key(relpath, path_casefold)
@@ -230,7 +226,7 @@ def generate_plan_for_file(
     else:
         needs_llm = []
 
-    if needs_llm:
+    if run_llm and needs_llm:
         from kdeai import llm as kdellm
 
         kdellm.batch_translate(needs_llm, config, target_lang=builder.lang)
@@ -337,32 +333,15 @@ def _read_json(path: Path, label: str) -> dict:
     return payload
 
 
-def _marker_settings_from_config(config: Mapping[str, object]) -> tuple[list[str], list[str], str]:
-    markers = config.get("markers") if isinstance(config, Mapping) else None
-    if not isinstance(markers, Mapping):
-        return kdeapply.DEFAULT_MARKER_FLAGS, kdeapply.DEFAULT_COMMENT_PREFIXES, kdeapply.DEFAULT_AI_FLAG
-    ai_flag = str(markers.get("ai_flag") or kdeapply.DEFAULT_AI_FLAG)
-    comment_prefixes = markers.get("comment_prefixes")
-    if isinstance(comment_prefixes, Mapping):
-        ordered = []
-        for key in ("tool", "ai", "tm", "review"):
-            value = comment_prefixes.get(key)
-            if value:
-                ordered.append(str(value))
-        if ordered:
-            return kdeapply.DEFAULT_MARKER_FLAGS, ordered, ai_flag
-    return kdeapply.DEFAULT_MARKER_FLAGS, kdeapply.DEFAULT_COMMENT_PREFIXES, ai_flag
+def _marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str]:
+    markers = config.markers
+    comment_prefixes = markers.comment_prefixes
+    ordered = [comment_prefixes.tool, comment_prefixes.ai, comment_prefixes.tm, comment_prefixes.review]
+    return kdeapply.DEFAULT_MARKER_FLAGS, ordered, markers.ai_flag
 
 
-def _review_prefix_from_config(config: Mapping[str, object]) -> str:
-    markers = config.get("markers") if isinstance(config, Mapping) else None
-    if isinstance(markers, Mapping):
-        comment_prefixes = markers.get("comment_prefixes")
-        if isinstance(comment_prefixes, Mapping):
-            value = comment_prefixes.get("review")
-            if value:
-                return str(value)
-    return "KDEAI-REVIEW:"
+def _review_prefix_from_config(config: Config) -> str:
+    return config.markers.comment_prefixes.review
 
 
 def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
@@ -401,35 +380,23 @@ def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> b
     raise ValueError(f"unsupported overwrite mode: {overwrite}")
 
 
-def _examples_settings(config: Mapping[str, object]) -> tuple[list[str], int, str]:
-    prompt_cfg = config.get("prompt") if isinstance(config, Mapping) else None
-    examples_cfg = prompt_cfg.get("examples") if isinstance(prompt_cfg, Mapping) else None
-    if not isinstance(examples_cfg, Mapping):
-        return ["workspace", "reference"], 6, "auto"
-    scopes = examples_cfg.get("lookup_scopes")
-    if isinstance(scopes, Sequence) and not isinstance(scopes, (str, bytes)):
-        lookup_scopes = [str(scope) for scope in scopes]
-    else:
-        lookup_scopes = ["workspace", "reference"]
-    top_n = int(examples_cfg.get("top_n", 6))
-    mode_default = str(examples_cfg.get("mode_default", "auto"))
-    return lookup_scopes, top_n, mode_default
+def _examples_settings(config: Config) -> tuple[list[str], int, str]:
+    examples_cfg = config.prompt.examples
+    return (
+        list(examples_cfg.lookup_scopes),
+        int(examples_cfg.top_n),
+        str(examples_cfg.mode_default),
+    )
 
 
-def _glossary_settings(config: Mapping[str, object]) -> tuple[list[str], int, str, str]:
-    prompt_cfg = config.get("prompt") if isinstance(config, Mapping) else None
-    glossary_cfg = prompt_cfg.get("glossary") if isinstance(prompt_cfg, Mapping) else None
-    if not isinstance(glossary_cfg, Mapping):
-        return ["reference"], 10, "auto", DEFAULT_GLOSSARY_NORMALIZATION_ID
-    scopes = glossary_cfg.get("lookup_scopes")
-    if isinstance(scopes, Sequence) and not isinstance(scopes, (str, bytes)):
-        lookup_scopes = [str(scope) for scope in scopes]
-    else:
-        lookup_scopes = ["reference"]
-    max_terms = int(glossary_cfg.get("max_terms", 10))
-    mode_default = str(glossary_cfg.get("mode_default", "auto"))
-    normalization_id = str(glossary_cfg.get("normalization_id") or DEFAULT_GLOSSARY_NORMALIZATION_ID)
-    return lookup_scopes, max_terms, mode_default, normalization_id
+def _glossary_settings(config: Config) -> tuple[list[str], int, str, str]:
+    glossary_cfg = config.prompt.glossary
+    return (
+        list(glossary_cfg.lookup_scopes),
+        int(glossary_cfg.max_terms),
+        str(glossary_cfg.mode_default),
+        str(glossary_cfg.normalization_id),
+    )
 
 
 def _open_workspace_tm(
@@ -576,7 +543,7 @@ def _build_assets(
     *,
     project_root: Path,
     project_id: str,
-    config: Mapping[str, object],
+    config: Config,
     config_hash: str,
     embed_policy_hash: str,
     lang: str,
@@ -657,12 +624,10 @@ def _build_assets(
             )
     if glossary_conn is not None:
         try:
-            languages = config.get("languages") if isinstance(config, Mapping) else None
-            src_lang = str(languages.get("source") or "") if isinstance(languages, Mapping) else ""
             from kdeai import glossary as kdeglo
 
             glossary_terms = kdeglo.load_terms(
-                glossary_conn, src_lang=src_lang, tgt_lang=lang
+                glossary_conn, src_lang=config.languages.source, tgt_lang=lang
             )
             normalizer = kdeglo.build_normalizer_from_config(config)
             glossary_matcher = kdeglo.GlossaryMatcher(
@@ -741,7 +706,7 @@ def build_plan(
     *,
     project_root: Path,
     project_id: str,
-    config: Mapping[str, object],
+    config: Config,
     config_hash: str,
     embed_policy_hash: str,
     lang: str,
@@ -771,10 +736,7 @@ def build_plan(
     )
 
     files_payload: list[dict] = []
-    apply_cfg = config.get("apply") if isinstance(config, Mapping) else None
-    if not isinstance(apply_cfg, Mapping):
-        apply_cfg = {}
-    selected_overwrite = str(overwrite or apply_cfg.get("overwrite_default", "conservative"))
+    selected_overwrite = str(overwrite or config.apply.overwrite_default)
     debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
     project_meta = _read_json(
         project_root / ".kdeai" / "project.json",
@@ -909,12 +871,9 @@ def build_plan(
         "apply_defaults": {},
         "files": files_payload,
     }
-    apply_cfg = config.get("apply") if isinstance(config, Mapping) else None
-    if not isinstance(apply_cfg, Mapping):
-        apply_cfg = {}
     plan_payload["apply_defaults"] = {
-        "mode": str(apply_cfg.get("mode_default", "strict")),
-        "overwrite": str(apply_cfg.get("overwrite_default", "conservative")),
+        "mode": str(config.apply.mode_default),
+        "overwrite": str(config.apply.overwrite_default),
         "post_index": "off",
     }
     return finalize_plan(plan_payload)

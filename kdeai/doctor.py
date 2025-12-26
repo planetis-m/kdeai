@@ -402,12 +402,7 @@ def run_doctor(
         valid_example_paths=valid_example_paths,
     )
 
-    prompt = config.data.get("prompt") if isinstance(config.data, dict) else None
-    glossary_cfg = prompt.get("glossary") if isinstance(prompt, dict) else None
-    if isinstance(glossary_cfg, dict):
-        normalization_id = str(glossary_cfg.get("normalization_id") or kdeglo.NORMALIZATION_ID)
-    else:
-        normalization_id = kdeglo.NORMALIZATION_ID
+    normalization_id = str(config.prompt.glossary.normalization_id or kdeglo.NORMALIZATION_ID)
     _check_glossary_pointer(
         project_root,
         project_id=project_id,

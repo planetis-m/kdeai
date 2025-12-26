@@ -10,13 +10,11 @@ import math
 import sqlite3
 import sys
 
-from kdeai import config as kdeconfig
 from kdeai import db as kdedb
+from kdeai.config import Config
 
 
-DEFAULT_REVIEW_STATUS_ORDER = ["reviewed", "draft", "needs_review", "unreviewed"]
 DEFAULT_MIN_REVIEW_STATUS = "reviewed"
-DEFAULT_ALLOW_AI = False
 
 
 @dataclass(frozen=True)
@@ -63,40 +61,12 @@ class ExamplesDb:
 EmbeddingFunc = Callable[[Sequence[str]], Sequence[Sequence[float]]]
 
 
-def _require_mapping(value: object, label: str) -> dict:
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    return value
-
-
-def _normalize_embed_policy(config: Mapping[str, object]) -> dict[str, object]:
-    prompt = _require_mapping(config.get("prompt"), "prompt")
-    examples = _require_mapping(prompt.get("examples"), "prompt.examples")
-    policy = _require_mapping(examples.get("embedding_policy"), "prompt.examples.embedding_policy")
-    normalized = kdeconfig._normalize_embed_policy(
-        {"prompt": {"examples": {"embedding_policy": policy}}}
-    )
-    return normalized
-
-
-def _examples_settings(config: Mapping[str, object]) -> tuple[list[str], str, bool]:
-    prompt = config.get("prompt") if isinstance(config, Mapping) else None
-    examples = prompt.get("examples") if isinstance(prompt, Mapping) else None
-    eligibility = examples.get("eligibility") if isinstance(examples, Mapping) else None
-    if not isinstance(eligibility, Mapping):
-        eligibility = {}
-    min_review_status = str(
-        eligibility.get("min_review_status", DEFAULT_MIN_REVIEW_STATUS)
-    )
-    allow_ai_generated = bool(eligibility.get("allow_ai_generated", DEFAULT_ALLOW_AI))
-
-    tm = config.get("tm") if isinstance(config, Mapping) else None
-    selection = tm.get("selection") if isinstance(tm, Mapping) else None
-    order = selection.get("review_status_order") if isinstance(selection, Mapping) else None
-    if isinstance(order, Sequence) and not isinstance(order, (str, bytes)):
-        review_status_order = [str(item) for item in order]
-    else:
-        review_status_order = list(DEFAULT_REVIEW_STATUS_ORDER)
+def _examples_settings(config: Config) -> tuple[list[str], str, bool]:
+    examples = config.prompt.examples
+    eligibility = examples.eligibility
+    review_status_order = list(config.tm.selection.review_status_order)
+    min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
+    allow_ai_generated = bool(eligibility.allow_ai_generated)
     return review_status_order, min_review_status, allow_ai_generated
 
 
@@ -198,7 +168,7 @@ def _build_examples_rows(
     rows: Iterable[Sequence[object]],
     *,
     lang: str,
-    config: Mapping[str, object],
+    config: Config,
     embedder: EmbeddingFunc,
     embedding_dim: int,
     embedding_normalization: str,
@@ -303,18 +273,18 @@ def _build_examples_db(
     source_snapshot_kind: str,
     source_snapshot_id: str | None,
     lang: str,
-    config: Mapping[str, object],
+    config: Config,
     project_id: str,
     config_hash: str,
     embed_policy_hash: str,
     embedder: EmbeddingFunc,
 ) -> Path:
-    policy = _normalize_embed_policy(config)
-    embedding_dim = int(policy["dim"])
-    embedding_distance = str(policy["distance"])
-    vector_encoding = str(policy["encoding"])
-    embedding_normalization = str(policy["normalization"])
-    require_finite = bool(policy["require_finite"])
+    policy = config.prompt.examples.embedding_policy
+    embedding_dim = int(policy.dim)
+    embedding_distance = str(policy.distance)
+    vector_encoding = str(policy.encoding)
+    embedding_normalization = str(policy.normalization)
+    require_finite = bool(policy.require_finite)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
@@ -372,7 +342,7 @@ def _build_examples_db(
         "config_hash": config_hash,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "embed_policy_hash": embed_policy_hash,
-        "embedding_model_id": str(policy["model_id"]),
+        "embedding_model_id": str(policy.model_id),
         "embedding_dim": str(embedding_dim),
         "embedding_distance": embedding_distance,
         "vector_encoding": vector_encoding,
@@ -401,7 +371,7 @@ def build_examples_db_from_workspace(
     *,
     output_path: Path,
     lang: str,
-    config: Mapping[str, object],
+    config: Config,
     project_id: str,
     config_hash: str,
     embed_policy_hash: str,
@@ -435,7 +405,7 @@ def build_examples_db_from_reference(
     *,
     output_path: Path,
     lang: str,
-    config: Mapping[str, object],
+    config: Config,
     project_id: str,
     config_hash: str,
     embed_policy_hash: str,
@@ -516,11 +486,6 @@ def query_examples(
     top_n: int,
     lang: str | None = None,
 ) -> list[ExampleMatch]:
-    db.conn.execute(
-        "SELECT vector_init('examples', 'embedding', ?)",
-        (f"type=FLOAT32,dimension={db.embedding_dim},distance={db.embedding_distance.upper()}",),
-    )
-    db.conn.execute("SELECT vector_quantize_preload('examples', 'embedding')")
     if isinstance(query_embedding, (bytes, bytearray)):
         blob = bytes(query_embedding)
         if len(blob) != 4 * db.embedding_dim:
@@ -534,6 +499,11 @@ def query_examples(
             embedding_dim=db.embedding_dim,
             require_finite=db.require_finite,
         )
+    db.conn.execute(
+        "SELECT vector_init('examples', 'embedding', ?)",
+        (f"type=FLOAT32,dimension={db.embedding_dim},distance={db.embedding_distance.upper()}",),
+    )
+    db.conn.execute("SELECT vector_quantize_preload('examples', 'embedding')")
 
     sql = _vector_query_sql(with_lang_filter=lang is not None)
     params: list[object] = [blob, int(top_n)]

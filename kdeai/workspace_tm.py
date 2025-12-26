@@ -5,30 +5,18 @@ from typing import Iterable, Mapping, Sequence
 import sqlite3
 
 from kdeai import hash as kdehash
+from kdeai.config import Config
 from kdeai import po_model
 
 DEFAULT_REVIEW_STATUS_ORDER = ["reviewed", "draft", "needs_review", "unreviewed"]
 DEFAULT_PREFER_HUMAN = True
 
 
-def _selection_settings(config: Mapping[str, object] | None) -> tuple[list[str], bool]:
-    if not config:
+def _selection_settings(config: Config | None) -> tuple[list[str], bool]:
+    if config is None:
         return DEFAULT_REVIEW_STATUS_ORDER, DEFAULT_PREFER_HUMAN
-    tm = config.get("tm") if isinstance(config, Mapping) else None
-    if not isinstance(tm, Mapping):
-        return DEFAULT_REVIEW_STATUS_ORDER, DEFAULT_PREFER_HUMAN
-    selection = tm.get("selection")
-    if not isinstance(selection, Mapping):
-        return DEFAULT_REVIEW_STATUS_ORDER, DEFAULT_PREFER_HUMAN
-
-    review_status_order = selection.get("review_status_order")
-    if isinstance(review_status_order, Sequence) and not isinstance(review_status_order, (str, bytes)):
-        status_order = [str(item) for item in review_status_order]
-    else:
-        status_order = DEFAULT_REVIEW_STATUS_ORDER
-
-    prefer_human = selection.get("prefer_human", DEFAULT_PREFER_HUMAN)
-    return status_order, bool(prefer_human)
+    selection = config.tm.selection
+    return list(selection.review_status_order), bool(selection.prefer_human)
 
 
 def _derive_review_status(msgstr: str, msgstr_plural: Mapping[str, str], has_plural: bool) -> str:
@@ -145,7 +133,7 @@ def index_file_snapshot_tm(
     sha256: str,
     mtime_ns: int,
     size: int,
-    config: Mapping[str, object] | None = None,
+    config: Config | None = None,
 ) -> None:
     """Index one PO snapshot into the workspace TM in a single transaction."""
     units = po_model.parse_po_bytes(bytes)

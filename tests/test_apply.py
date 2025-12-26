@@ -5,6 +5,7 @@ from pathlib import Path
 
 import polib
 
+from conftest import build_config
 from kdeai import apply
 from kdeai import plan
 
@@ -486,7 +487,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 overwrite="conservative",
                 post_index=True,
                 workspace_conn=object(),
-                config={"tm": {"selection": {}}},
+                config=build_config({"tm": {"selection": {}}}),
             )
 
             self.assertEqual(result.errors, [])
