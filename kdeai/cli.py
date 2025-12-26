@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, Sequence
 import json
 import os
 from datetime import datetime, timezone
-import hashlib
-import tempfile
 
 import portalocker
-import polib
 import typer
 import click
 
@@ -24,6 +21,7 @@ from kdeai import glossary as kdeglo
 from kdeai import hash as kdehash
 from kdeai import locks
 from kdeai import plan as kdeplan
+from kdeai import po_utils
 from kdeai import reference as kderef
 from kdeai import snapshot
 from kdeai import workspace_tm
@@ -53,16 +51,7 @@ def _project_path(project_root: Path) -> Path:
     return _project_dir(project_root) / "project.json"
 
 
-def _read_json(path: Path, label: str) -> dict:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"{label} not found: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{label} is not valid JSON: {path}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"{label} must be a JSON object: {path}")
-    return data
+_read_json = po_utils.read_json
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -140,64 +129,19 @@ def _project_root(ctx: typer.Context) -> Path:
     return Path.cwd()
 
 
-def _normalize_relpath(project_root: Path, path: Path) -> str:
-    resolved = path.resolve()
-    relpath = resolved.relative_to(project_root.resolve())
-    return relpath.as_posix()
+_normalize_relpath = po_utils.normalize_relpath
+_relpath_key = po_utils.relpath_key
 
 
-def _relpath_key(relpath: str, path_casefold: bool) -> str:
-    return relpath.casefold() if path_casefold else relpath
-
-
-def _iter_po_paths(project_root: Path, raw_paths: Optional[list[Path]]) -> list[Path]:
-    roots = raw_paths if raw_paths else [project_root]
-    seen: set[Path] = set()
-    results: list[Path] = []
-
-    for raw in roots:
-        full = raw if raw.is_absolute() else project_root / raw
-        if not full.exists():
-            continue
-        if full.is_file():
-            candidates = [full]
-        else:
-            candidates = list(full.rglob("*.po"))
-        for candidate in candidates:
-            if candidate.suffix.lower() != ".po":
-                continue
-            if any(part in {".kdeai", ".git"} for part in candidate.parts):
-                continue
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            results.append(resolved)
-    return results
+_iter_po_paths = po_utils.iter_po_paths
 
 
 def _parse_lang_from_bytes(po_bytes: bytes) -> Optional[str]:
-    with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
-        tmp.write(po_bytes)
-        tmp_path = tmp.name
-    try:
-        po_file = polib.pofile(tmp_path)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    po_file = po_utils.load_po_from_bytes(po_bytes)
     language = po_file.metadata.get("Language") if po_file else None
     if language:
         return str(language).strip()
     return None
-
-
-def _load_po_from_bytes(po_bytes: bytes) -> polib.POFile:
-    with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
-        tmp.write(po_bytes)
-        tmp_path = tmp.name
-    try:
-        return polib.pofile(tmp_path)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
 
 
 def _next_pointer_id(pointer_path: Path, key: str) -> int:
@@ -264,13 +208,6 @@ def _apply_defaults_from_config(config: Config) -> dict:
         "overwrite": str(config.apply.overwrite_default),
         "post_index": "off",
     }
-
-
-def _marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str]:
-    markers = config.markers
-    prefixes = markers.comment_prefixes
-    ordered = [prefixes.tool, prefixes.ai, prefixes.tm, prefixes.review]
-    return kdeapply.DEFAULT_MARKER_FLAGS, ordered, markers.ai_flag
 
 
 def _workspace_tm_settings(config: Config) -> tuple[int, str]:
@@ -350,7 +287,6 @@ def plan(
     project_root = _project_root(ctx)
     project = Project.load(project_root)
     config = project.config
-    _ = cache_write
     cache_mode = cache or "on"
     resolved_examples_mode = _examples_mode_from_config(config, examples)
     embedder = _maybe_embedder(
@@ -396,6 +332,7 @@ def plan(
         "marker_flags": list(builder.marker_flags),
         "comment_prefixes": list(builder.comment_prefixes),
         "ai_flag": builder.ai_flag,
+        "placeholder_patterns": list(config.apply.validation_patterns),
         "apply_defaults": {
             "mode": str(apply_cfg.get("mode", "strict")),
             "overwrite": str(apply_cfg.get("overwrite", "conservative")),
@@ -424,13 +361,13 @@ def apply(
     post_index_flag = post_index == "on"
     workspace_conn = None
     try:
-        project = _load_project(project_root)
-        config = kdeconfig.load_config_from_root(project_root)
+        project = Project.load(project_root)
+        config = project.config
     except Exception as exc:
         typer.secho(f"Apply failed: {exc}", err=True)
         raise typer.Exit(1)
 
-    project_id = str(plan.get("project_id") or project.get("project_id") or "")
+    project_id = str(plan.get("project_id") or project.project_data.get("project_id") or "")
 
     if post_index_flag:
         try:
@@ -454,28 +391,6 @@ def apply(
         workspace_conn=workspace_conn,
     )
 
-    post_index_warnings: list[str] = []
-    lang = str(plan.get("lang", ""))
-    if post_index_flag and workspace_conn is not None:
-        for file_path in result.files_written:
-            try:
-                full_path = project_root / file_path
-                data = full_path.read_bytes()
-                sha256_hex = hashlib.sha256(data).hexdigest()
-                stat = full_path.stat()
-                workspace_tm.index_file_snapshot_tm(
-                    workspace_conn,
-                    file_path=file_path,
-                    lang=lang,
-                    bytes=data,
-                    sha256=sha256_hex,
-                    mtime_ns=stat.st_mtime_ns,
-                    size=stat.st_size,
-                    config=config,
-                )
-            except Exception as exc:
-                post_index_warnings.append(f"post-index failed for {file_path}: {exc}")
-
     if workspace_conn is not None:
         workspace_conn.close()
 
@@ -484,8 +399,8 @@ def apply(
             typer.secho(error, err=True)
         raise typer.Exit(1)
 
-    if result.warnings or post_index_warnings:
-        for warning in result.warnings + post_index_warnings:
+    if result.warnings:
+        for warning in result.warnings:
             typer.secho(f"Warning: {warning}", err=True)
 
     typer.echo(
@@ -508,9 +423,9 @@ def translate(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = _load_project(project_root)
-    config = kdeconfig.load_config_from_root(project_root)
-    _ = cache_write
+    project = Project.load(project_root)
+    config = project.config
+    cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
     resolved_examples_mode = _examples_mode_from_config(config, examples)
     embedder = _maybe_embedder(
@@ -518,33 +433,39 @@ def translate(
         _examples_embed_policy(config),
     )
     sqlite_vector_path = _sqlite_vector_path(project_root)
-    path_casefold = bool(project.get("path_casefold", os.name == "nt"))
+    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(config)
     post_index_flag = apply_defaults.get("post_index") == "on"
+    if cache_mode == "off" or cache_write_flag == "off":
+        post_index_flag = False
 
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
-        project_id=str(project["project_id"]),
+        project_id=str(project.project_data["project_id"]),
         config=config,
         lang=lang,
         cache=cache_mode,
         examples_mode=examples,
         glossary_mode=glossary,
         overwrite=overwrite,
+        session_tm={},
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
     )
 
     files_payload: list[dict] = []
     workspace_conn = None
-    result = None
+    session_tm = builder.session_tm
+    total_entries_applied = 0
+    files_written: list[str] = []
+    files_skipped: list[str] = []
 
     if post_index_flag:
         try:
             workspace_conn = _ensure_workspace_db(
                 project_root,
-                project_id=str(project["project_id"]),
+                project_id=str(project.project_data["project_id"]),
                 config_hash=config.config_hash,
                 config=config,
             )
@@ -552,11 +473,27 @@ def translate(
             typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
             post_index_flag = False
 
+    plan_header = {
+        "format": kdeplan.PLAN_FORMAT_VERSION,
+        "project_id": str(project.project_data["project_id"]),
+        "config_hash": config.config_hash,
+        "lang": lang,
+        "marker_flags": list(builder.marker_flags),
+        "comment_prefixes": list(builder.comment_prefixes),
+        "ai_flag": builder.ai_flag,
+        "placeholder_patterns": list(config.apply.validation_patterns),
+        "apply_defaults": {
+            "mode": str(apply_defaults.get("mode", "strict")),
+            "overwrite": str(apply_defaults.get("overwrite", "conservative")),
+            "post_index": str(apply_defaults.get("post_index", "off")),
+        },
+    }
+
     try:
         for path in _iter_po_paths(project_root, paths):
             file_plan = kdeplan.generate_plan_for_file(
                 project_root=project_root,
-                project_id=str(project["project_id"]),
+                project_id=str(project.project_data["project_id"]),
                 path=path,
                 path_casefold=path_casefold,
                 builder=builder,
@@ -564,73 +501,44 @@ def translate(
                 run_llm=True,
             )
             files_payload.append(file_plan)
-    finally:
-        builder.close()
+            per_file_plan = dict(plan_header)
+            per_file_plan["files"] = [file_plan]
+            result = kdeapply.apply_plan(
+                per_file_plan,
+                project_root=project_root,
+                config=config,
+                apply_mode=apply_mode,
+                overwrite=overwrite,
+                post_index=post_index_flag,
+                workspace_conn=workspace_conn,
+                session_tm=session_tm,
+            )
 
-    combined_plan = {
-        "format": kdeplan.PLAN_FORMAT_VERSION,
-        "project_id": str(project["project_id"]),
-        "config_hash": config.config_hash,
-        "lang": lang,
-        "marker_flags": list(builder.marker_flags),
-        "comment_prefixes": list(builder.comment_prefixes),
-        "ai_flag": builder.ai_flag,
-        "apply_defaults": {
-            "mode": str(apply_defaults.get("mode", "strict")),
-            "overwrite": str(apply_defaults.get("overwrite", "conservative")),
-            "post_index": str(apply_defaults.get("post_index", "off")),
-        },
-        "files": files_payload,
-    }
+            if result.errors:
+                for error in result.errors:
+                    typer.secho(error, err=True)
+                raise typer.Exit(1)
 
-    try:
-        result = kdeapply.apply_plan(
-            combined_plan,
-            project_root=project_root,
-            config=config,
-            apply_mode=apply_mode,
-            overwrite=overwrite,
-        )
+            if result.warnings:
+                for warning in result.warnings:
+                    typer.secho(f"Warning: {warning}", err=True)
 
-        post_index_warnings: list[str] = []
-        if post_index_flag and workspace_conn is not None:
-            for file_path in result.files_written:
-                try:
-                    full_path = project_root / file_path
-                    data = full_path.read_bytes()
-                    sha256_hex = hashlib.sha256(data).hexdigest()
-                    stat = full_path.stat()
-                    workspace_tm.index_file_snapshot_tm(
-                        workspace_conn,
-                        file_path=file_path,
-                        lang=lang,
-                        bytes=data,
-                        sha256=sha256_hex,
-                        mtime_ns=stat.st_mtime_ns,
-                        size=stat.st_size,
-                        config=config,
-                    )
-                except Exception as exc:
-                    post_index_warnings.append(f"post-index failed for {file_path}: {exc}")
+            total_entries_applied += result.entries_applied
+            files_written.extend(result.files_written)
+            files_skipped.extend(result.files_skipped)
 
         if out is not None:
+            combined_plan = dict(plan_header)
+            combined_plan["files"] = files_payload
             kdeplan.write_plan(out, combined_plan)
-
-        if result.errors:
-            for error in result.errors:
-                typer.secho(error, err=True)
-            raise typer.Exit(1)
-
-        if result.warnings or post_index_warnings:
-            for warning in result.warnings + post_index_warnings:
-                typer.secho(f"Warning: {warning}", err=True)
     finally:
         if workspace_conn is not None:
             workspace_conn.close()
+        builder.close()
 
     typer.echo(
-        f"Applied {result.entries_applied} entries "
-        f"({len(result.files_written)} files written, {len(result.files_skipped)} skipped)."
+        f"Applied {total_entries_applied} entries "
+        f"({len(files_written)} files written, {len(files_skipped)} skipped)."
     )
 
 

@@ -7,7 +7,6 @@ import json
 import os
 import sqlite3
 import sys
-import tempfile
 
 import polib
 
@@ -17,6 +16,7 @@ from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import hash as kdehash
 from kdeai import locks
+from kdeai import po_utils
 from kdeai import po_model
 from kdeai import prompt as kdeprompt
 from kdeai import retrieve_tm
@@ -36,6 +36,7 @@ class PlannerAssets:
     workspace_conn: sqlite3.Connection | None
     reference_conn: sqlite3.Connection | None
     examples_db: kdeexamples.ExamplesDb | None
+    glossary_conn: sqlite3.Connection | None
     glossary_terms: list[object]
     glossary_matcher: object | None
     examples_top_n: int
@@ -64,8 +65,13 @@ class PlanBuilder:
         self.config = config
         self.lang = lang
         self.session_tm = session_tm
-        self.marker_flags, self.comment_prefixes, self.ai_flag = _marker_settings_from_config(config)
-        self.review_prefix = _review_prefix_from_config(config)
+        (
+            self.marker_flags,
+            self.comment_prefixes,
+            self.review_prefix,
+            _ai_prefix,
+            self.ai_flag,
+        ) = po_utils.marker_settings_from_config(config)
         self.selected_overwrite = str(overwrite or config.apply.overwrite_default)
         self.assets = _build_assets(
             project_root=project_root,
@@ -94,6 +100,8 @@ class PlanBuilder:
             self.assets.workspace_conn.close()
         if self.assets.reference_conn is not None:
             self.assets.reference_conn.close()
+        if self.assets.glossary_conn is not None:
+            self.assets.glossary_conn.close()
 
     def build_draft(
         self,
@@ -110,9 +118,9 @@ class PlanBuilder:
             if entry.obsolete or entry.msgid == "":
                 continue
             total_entries += 1
-            current_non_empty = _has_non_empty_translation(entry)
-            reviewed = _is_reviewed(entry, self.review_prefix)
-            if not _can_overwrite(current_non_empty, reviewed, self.selected_overwrite):
+            current_non_empty = po_utils.has_non_empty_translation(entry)
+            reviewed = po_utils.is_reviewed(entry, self.review_prefix)
+            if not po_utils.can_overwrite(current_non_empty, reviewed, self.selected_overwrite):
                 skipped_overwrite += 1
                 continue
             msgctxt = entry.msgctxt or ""
@@ -219,7 +227,7 @@ def generate_plan_for_file(
         locks.lock_id(project_id, relpath_key),
     )
     locked = snapshot.locked_read_file(path, lock_path)
-    po_file = _load_po_from_bytes(locked.bytes)
+    po_file = po_utils.load_po_from_bytes(locked.bytes)
     file_draft = builder.build_draft(relpath, po_file)
     file_draft["base_sha256"] = locked.sha256
 
@@ -292,63 +300,10 @@ def load_plan(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _iter_po_paths(project_root: Path, raw_paths: Optional[list[Path]]) -> list[Path]:
-    roots = raw_paths if raw_paths else [project_root]
-    seen: set[Path] = set()
-    results: list[Path] = []
-
-    for raw in roots:
-        full = raw if raw.is_absolute() else project_root / raw
-        if not full.exists():
-            continue
-        if full.is_file():
-            candidates = [full]
-        else:
-            candidates = list(full.rglob("*.po"))
-        for candidate in candidates:
-            if candidate.suffix.lower() != ".po":
-                continue
-            if any(part in {".kdeai", ".git"} for part in candidate.parts):
-                continue
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            results.append(resolved)
-    return results
-
-
-def _normalize_relpath(project_root: Path, path: Path) -> str:
-    resolved = path.resolve()
-    relpath = resolved.relative_to(project_root.resolve())
-    return relpath.as_posix()
-
-
-def _relpath_key(relpath: str, path_casefold: bool) -> str:
-    return relpath.casefold() if path_casefold else relpath
-
-
-def _read_json(path: Path, label: str) -> dict:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"{label} not found: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{label} is not valid JSON: {path}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"{label} must be a JSON object: {path}")
-    return payload
-
-
-def _marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str]:
-    markers = config.markers
-    comment_prefixes = markers.comment_prefixes
-    ordered = [comment_prefixes.tool, comment_prefixes.ai, comment_prefixes.tm, comment_prefixes.review]
-    return kdeapply.DEFAULT_MARKER_FLAGS, ordered, markers.ai_flag
-
-
-def _review_prefix_from_config(config: Config) -> str:
-    return config.markers.comment_prefixes.review
+_iter_po_paths = po_utils.iter_po_paths
+_normalize_relpath = po_utils.normalize_relpath
+_relpath_key = po_utils.relpath_key
+_read_json = po_utils.read_json
 
 
 def _tm_tags_and_comments(
@@ -374,42 +329,6 @@ def _tm_tags_and_comments(
         "append": "",
     }
     return flags, comments
-
-
-def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
-    if not text:
-        return []
-    lines = [line.rstrip("\n") for line in text.replace("\r\n", "\n").split("\n")]
-    selected = []
-    for line in lines:
-        for prefix in prefixes:
-            if line.startswith(prefix):
-                selected.append(line)
-                break
-    return selected
-
-
-def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
-    lines = _tool_comment_lines(entry.tcomment, [review_prefix])
-    return bool(lines)
-
-
-def _has_non_empty_translation(entry: polib.POEntry) -> bool:
-    if entry.msgid_plural:
-        return any(str(value).strip() for value in entry.msgstr_plural.values())
-    return (entry.msgstr or "").strip() != ""
-
-
-def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> bool:
-    if overwrite == "conservative":
-        return not current_non_empty and not reviewed
-    if overwrite == "allow-nonempty":
-        return not reviewed
-    if overwrite == "allow-reviewed":
-        return not reviewed or (reviewed and not current_non_empty)
-    if overwrite == "all":
-        return True
-    raise ValueError(f"unsupported overwrite mode: {overwrite}")
 
 
 def _examples_settings(config: Config) -> tuple[list[str], int, str]:
@@ -672,6 +591,8 @@ def _build_assets(
         except Exception:
             if glossary_mode == "required":
                 raise
+            glossary_conn.close()
+            glossary_conn = None
             glossary_terms = []
             glossary_matcher = None
     elif glossary_mode == "required":
@@ -688,21 +609,12 @@ def _build_assets(
         workspace_conn=workspace_conn,
         reference_conn=reference_conn,
         examples_db=examples_db if embedder is not None else None,
+        glossary_conn=glossary_conn,
         glossary_terms=glossary_terms,
         glossary_matcher=glossary_matcher,
         examples_top_n=examples_top_n,
         glossary_max_terms=glossary_max_terms,
     )
-
-
-def _load_po_from_bytes(data: bytes) -> polib.POFile:
-    with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
-        tmp.write(data)
-        tmp_path = tmp.name
-    try:
-        return polib.pofile(tmp_path)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
 
 
 def _collect_examples(
@@ -740,182 +652,3 @@ def _collect_glossary(
     if matcher is None:
         return []
     return matcher.match(source_text, max_terms=max_terms)
-
-
-def build_plan(
-    *,
-    project_root: Path,
-    project_id: str,
-    config: Config,
-    lang: str,
-    paths: Optional[list[Path]] = None,
-    cache: str = "on",
-    examples_mode: str | None = None,
-    glossary_mode: str | None = None,
-    overwrite: str | None = None,
-    session_tm: Mapping[object, object] | None = None,
-    embedder: EmbeddingFunc | None = None,
-    sqlite_vector_path: str | None = None,
-) -> dict:
-    marker_flags, comment_prefixes, ai_flag = _marker_settings_from_config(config)
-    review_prefix = _review_prefix_from_config(config)
-    assets = _build_assets(
-        project_root=project_root,
-        project_id=project_id,
-        config=config,
-        lang=lang,
-        cache=cache,
-        examples_mode=examples_mode,
-        glossary_mode=glossary_mode,
-        embedder=embedder,
-        sqlite_vector_path=sqlite_vector_path,
-    )
-
-    files_payload: list[dict] = []
-    selected_overwrite = str(overwrite or config.apply.overwrite_default)
-    debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
-    project_meta = _read_json(
-        project_root / ".kdeai" / "project.json",
-        "project.json",
-    )
-    path_casefold = bool(project_meta.get("path_casefold"))
-
-    for path in _iter_po_paths(project_root, paths):
-        relpath = _normalize_relpath(project_root, path)
-        relpath_key = _relpath_key(relpath, path_casefold)
-        lock_path = locks.per_file_lock_path(
-            project_root,
-            locks.lock_id(project_id, relpath_key),
-        )
-        locked = snapshot.locked_read_file(path, lock_path)
-
-        po_file = _load_po_from_bytes(locked.bytes)
-        entries_payload: list[dict] = []
-        total_entries = 0
-        skipped_overwrite = 0
-        tm_entries = 0
-        llm_entries = 0
-
-        for entry in po_file:
-            if entry.obsolete or entry.msgid == "":
-                continue
-            total_entries += 1
-            current_non_empty = _has_non_empty_translation(entry)
-            reviewed = _is_reviewed(entry, review_prefix)
-            if not _can_overwrite(current_non_empty, reviewed, selected_overwrite):
-                skipped_overwrite += 1
-                continue
-            msgctxt = entry.msgctxt or ""
-            msgid = entry.msgid
-            msgid_plural = entry.msgid_plural or ""
-            base_state_hash = kdeapply.entry_state_hash(
-                entry,
-                lang=lang,
-                marker_flags=marker_flags,
-                comment_prefixes=comment_prefixes,
-            )
-            source_key = po_model.source_key_for(msgctxt, msgid, msgid_plural)
-            has_plural = bool(msgid_plural)
-            tm_candidate = retrieve_tm.lookup_tm_exact(
-                source_key,
-                lang,
-                has_plural=has_plural,
-                config=config,
-                session_tm=session_tm,
-                workspace_conn=assets.workspace_conn,
-                reference_conn=assets.reference_conn,
-            )
-            if tm_candidate is not None:
-                flags, comments = _tm_tags_and_comments(config, tm_candidate)
-                entries_payload.append(
-                    {
-                        "msgctxt": msgctxt,
-                        "msgid": msgid,
-                        "msgid_plural": msgid_plural,
-                        "base_state_hash": base_state_hash,
-                        "action": "copy_tm",
-                        "translation": {
-                            "msgstr": tm_candidate.msgstr,
-                            "msgstr_plural": tm_candidate.msgstr_plural,
-                        },
-                        "flags": flags,
-                        "comments": comments,
-                        "tm_scope": tm_candidate.scope,
-                    }
-                )
-                tm_entries += 1
-                continue
-
-            source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
-            examples = _collect_examples(
-                examples_db=assets.examples_db,
-                embedder=embedder,
-                source_text=source_text,
-                top_n=assets.examples_top_n,
-                lang=lang,
-                eligibility=config.prompt.examples.eligibility,
-                review_status_order=config.tm.selection.review_status_order,
-            )
-            glossary_matches = _collect_glossary(
-                matcher=assets.glossary_matcher,
-                source_text=msgid,
-                max_terms=assets.glossary_max_terms,
-            )
-            prompt_payload = kdeprompt.build_prompt_payload(
-                config=config,
-                msgctxt=msgctxt,
-                msgid=msgid,
-                msgid_plural=msgid_plural,
-                target_lang=lang,
-                examples=examples,
-                glossary=glossary_matches,
-            )
-            entries_payload.append(
-                {
-                    "msgctxt": msgctxt,
-                    "msgid": msgid,
-                    "msgid_plural": msgid_plural,
-                    "base_state_hash": base_state_hash,
-                    "action": "llm",
-                    "prompt": prompt_payload,
-                }
-            )
-            llm_entries += 1
-
-        if debug_enabled:
-            print(
-                "[kdeai][debug] plan",
-                relpath,
-                f"total_entries={total_entries}",
-                f"skipped_overwrite={skipped_overwrite}",
-                f"tm_entries={tm_entries}",
-                f"llm_entries={llm_entries}",
-                file=sys.stderr,
-            )
-
-        files_payload.append(
-            {
-                "file_path": relpath,
-                "base_sha256": locked.sha256,
-                "entries": entries_payload,
-            }
-        )
-
-    plan_payload = {
-        "format": PLAN_FORMAT_VERSION,
-        "project_id": project_id,
-        "config_hash": config.config_hash,
-        "lang": lang,
-        "marker_flags": list(marker_flags),
-        "comment_prefixes": list(comment_prefixes),
-        "ai_flag": ai_flag,
-        "placeholder_patterns": list(config.apply.validation_patterns),
-        "apply_defaults": {},
-        "files": files_payload,
-    }
-    plan_payload["apply_defaults"] = {
-        "mode": str(config.apply.mode_default),
-        "overwrite": str(config.apply.overwrite_default),
-        "post_index": "off",
-    }
-    return finalize_plan(plan_payload)

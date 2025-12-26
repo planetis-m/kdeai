@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, MutableMapping
 import hashlib
 import json
 import os
@@ -13,18 +13,14 @@ import polib
 from kdeai import hash as kdehash
 from kdeai import locks
 from kdeai import po_model
+from kdeai import po_utils
 from kdeai.config import Config
 from kdeai import snapshot
 from kdeai import validate
+from kdeai import workspace_tm
 
-DEFAULT_COMMENT_PREFIXES = [
-    "KDEAI:",
-    "KDEAI-AI:",
-    "KDEAI-TM:",
-    "KDEAI-REVIEW:",
-]
-
-DEFAULT_MARKER_FLAGS = ["fuzzy"]
+DEFAULT_COMMENT_PREFIXES = po_utils.DEFAULT_COMMENT_PREFIXES
+DEFAULT_MARKER_FLAGS = po_utils.DEFAULT_MARKER_FLAGS
 DEFAULT_AI_FLAG = "kdeai-ai"
 ALLOWED_OVERWRITE_POLICIES = {
     "conservative",
@@ -55,13 +51,7 @@ class ApplyFileResult:
 
 
 def _load_po_from_bytes(data: bytes) -> polib.POFile:
-    with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
-        tmp.write(data)
-        tmp_path = tmp.name
-    try:
-        return polib.pofile(tmp_path)
-    finally:
-        os.unlink(tmp_path)
+    return po_utils.load_po_from_bytes(data)
 
 
 def _serialize_po(po_file: polib.POFile) -> bytes:
@@ -84,16 +74,7 @@ def _entry_key(entry: polib.POEntry) -> tuple[str, str, str]:
 
 
 def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
-    if not text:
-        return []
-    lines = [line.rstrip("\n") for line in text.replace("\r\n", "\n").split("\n")]
-    selected = []
-    for line in lines:
-        for prefix in prefixes:
-            if line.startswith(prefix):
-                selected.append(line)
-                break
-    return selected
+    return po_utils.tool_comment_lines(text, prefixes)
 
 
 def _entry_state_hash(
@@ -118,9 +99,7 @@ def _entry_state_hash(
 
 
 def _marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str, str, str]:
-    prefixes = config.markers.comment_prefixes
-    ordered = [prefixes.tool, prefixes.ai, prefixes.tm, prefixes.review]
-    return DEFAULT_MARKER_FLAGS, ordered, prefixes.review, prefixes.ai, config.markers.ai_flag
+    return po_utils.marker_settings_from_config(config)
 
 
 def entry_state_hash(
@@ -199,36 +178,25 @@ def _set_translation(
 
 
 def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
-    lines = _tool_comment_lines(entry.tcomment, [review_prefix])
-    return bool(lines)
+    return po_utils.is_reviewed(entry, review_prefix)
 
 
 def _has_non_empty_translation(entry: polib.POEntry) -> bool:
-    if entry.msgid_plural:
-        return any(str(value).strip() for value in entry.msgstr_plural.values())
-    return (entry.msgstr or "").strip() != ""
+    return po_utils.has_non_empty_translation(entry)
 
 
 def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> bool:
-    if overwrite == "conservative":
-        return not current_non_empty and not reviewed
-    if overwrite == "allow-nonempty":
-        return not reviewed
-    if overwrite == "allow-reviewed":
-        return not reviewed or (reviewed and not current_non_empty)
-    if overwrite == "all":
-        return True
-    raise ValueError(f"unsupported overwrite mode: {overwrite}")
+    return po_utils.can_overwrite(current_non_empty, reviewed, overwrite)
 
 
 def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
     has_plural = bool(entry.msgid_plural)
-    non_empty = _has_non_empty_translation(entry)
+    non_empty = po_utils.has_non_empty_translation(entry)
     if not non_empty:
         return "unreviewed"
     if "fuzzy" in entry.flags:
         return "needs_review"
-    if _is_reviewed(entry, review_prefix):
+    if po_utils.is_reviewed(entry, review_prefix):
         return "reviewed"
     return "draft"
 
@@ -236,9 +204,33 @@ def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
 def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) -> int:
     if ai_flag in entry.flags:
         return 1
-    if _tool_comment_lines(entry.tcomment, [ai_prefix]):
+    if po_utils.tool_comment_lines(entry.tcomment, [ai_prefix]):
         return 1
     return 0
+
+
+def _update_session_tm(
+    session_tm: MutableMapping[object, object],
+    *,
+    entries: Iterable[polib.POEntry],
+    lang: str,
+    review_prefix: str,
+    ai_prefix: str,
+    ai_flag: str,
+) -> None:
+    for entry in entries:
+        source_key = po_model.source_key_for(entry.msgctxt, entry.msgid, entry.msgid_plural)
+        msgstr_plural = {str(k): str(v) for k, v in entry.msgstr_plural.items()}
+        review_status = _derive_review_status(entry, review_prefix)
+        is_ai_generated = _derive_is_ai_generated(entry, ai_flag, ai_prefix)
+        translation_hash = kdehash.translation_hash(source_key, lang, entry.msgstr or "", msgstr_plural)
+        session_tm[(source_key, lang)] = {
+            "msgstr": entry.msgstr or "",
+            "msgstr_plural": msgstr_plural,
+            "review_status": review_status,
+            "is_ai_generated": is_ai_generated,
+            "translation_hash": translation_hash,
+        }
 
 
 def apply_plan_to_file(
@@ -389,6 +381,7 @@ def apply_plan(
     overwrite: str | None = None,
     post_index: bool | None = None,
     workspace_conn=None,
+    session_tm: MutableMapping[object, object] | None = None,
 ) -> ApplyResult:
     project_meta = {}
     project_path = project_root / ".kdeai" / "project.json"
@@ -404,7 +397,7 @@ def apply_plan(
 
     selected_mode = str(apply_mode or defaults.get("mode") or "strict")
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
-    _ = post_index, workspace_conn
+    post_index_flag = bool(post_index) and workspace_conn is not None
 
     project_id = str(plan.get("project_id", ""))
     lang = str(plan.get("lang", ""))
@@ -489,5 +482,32 @@ def apply_plan(
         if file_result.wrote:
             files_written.append(file_path)
             entries_applied += file_result.entries_applied
+            if session_tm is not None and file_result.applied_entries:
+                _update_session_tm(
+                    session_tm,
+                    entries=file_result.applied_entries,
+                    lang=lang,
+                    review_prefix=review_prefix,
+                    ai_prefix=ai_prefix,
+                    ai_flag=ai_flag,
+                )
+            if post_index_flag:
+                try:
+                    full_path = project_root / file_path
+                    data = full_path.read_bytes()
+                    sha256_hex = hashlib.sha256(data).hexdigest()
+                    stat = full_path.stat()
+                    workspace_tm.index_file_snapshot_tm(
+                        workspace_conn,
+                        file_path=file_path,
+                        lang=lang,
+                        bytes=data,
+                        sha256=sha256_hex,
+                        mtime_ns=stat.st_mtime_ns,
+                        size=stat.st_size,
+                        config=config,
+                    )
+                except Exception as exc:
+                    warnings.append(f"post-index failed for {file_path}: {exc}")
 
     return ApplyResult(files_written, files_skipped, entries_applied, errors, warnings)
