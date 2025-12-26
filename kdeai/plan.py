@@ -425,12 +425,21 @@ def _build_assets(
     if examples_mode == "required" and (examples_db is None or embedder is None):
         raise ValueError("examples required but unavailable")
 
-    if examples_db is not None and sqlite_vector_path:
-        try:
-            kdedb.enable_sqlite_vector(examples_db.conn, extension_path=sqlite_vector_path)
-        except Exception:
+    if examples_db is not None:
+        if sqlite_vector_path:
+            try:
+                kdedb.enable_sqlite_vector(
+                    examples_db.conn, extension_path=sqlite_vector_path
+                )
+            except Exception:
+                if examples_mode == "required":
+                    raise
+                examples_db.conn.close()
+                examples_db = None
+        else:
             if examples_mode == "required":
-                raise
+                raise ValueError("examples required but sqlite-vector unavailable")
+            examples_db.conn.close()
             examples_db = None
 
     glossary_scopes, glossary_max_terms, glossary_default, normalization_id = _glossary_settings(
@@ -471,8 +480,12 @@ def _build_assets(
     elif glossary_mode == "required":
         raise ValueError("glossary required but unavailable")
 
-    if embedder is None and examples_mode == "required":
-        raise ValueError("examples required but no embedder provided")
+    if embedder is None:
+        if examples_mode == "required":
+            raise ValueError("examples required but no embedder provided")
+        if examples_db is not None:
+            examples_db.conn.close()
+            examples_db = None
 
     return PlannerAssets(
         workspace_conn=workspace_conn,

@@ -10,13 +10,19 @@ from typer.testing import CliRunner
 
 from kdeai.cli import app
 from kdeai import llm as kdellm
+import kdeai.cli as kdecli
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "playground2" / "katefiletree.po"
 
 
-def _write_config(root: Path) -> None:
+def _write_config(
+    root: Path,
+    *,
+    embedding_dim: int = 384,
+    min_review_status: str = "reviewed",
+) -> None:
     config = {
         "format": 2,
         "languages": {"source": "en", "targets": ["el"]},
@@ -43,7 +49,7 @@ def _write_config(root: Path) -> None:
                 "top_n": 6,
                 "embedding_policy": {
                     "model_id": "test-model",
-                    "dim": 384,
+                    "dim": embedding_dim,
                     "distance": "cosine",
                     "encoding": "float32_le",
                     "normalization": "none",
@@ -51,7 +57,7 @@ def _write_config(root: Path) -> None:
                     "require_finite": True,
                 },
                 "eligibility": {
-                    "min_review_status": "reviewed",
+                    "min_review_status": min_review_status,
                     "allow_ai_generated": False,
                 },
             },
@@ -83,6 +89,19 @@ def _copy_fixture(root: Path) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy(FIXTURE, dest / "katefiletree.po")
     return dest / "katefiletree.po"
+
+
+def _copy_vector(root: Path) -> Path:
+    candidates = [
+        PROJECT_ROOT / "tests" / "vector.so",
+        PROJECT_ROOT / "vector.so",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            dest = root / "vector.so"
+            shutil.copy(candidate, dest)
+            return dest
+    raise AssertionError("vector.so test fixture missing")
 
 
 def _count_untranslated(po_path: Path) -> int:
@@ -228,3 +247,65 @@ def test_plan_apply_strict_skips_when_file_changes(monkeypatch, tmp_path: Path) 
     assert "skipped" in result.stdout.lower()
 
     assert _count_untranslated(po_path) == 2
+
+
+def test_translate_adds_examples_to_prompt(monkeypatch, tmp_path: Path) -> None:
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, embedding_dim=3, min_review_status="draft")
+    po_path = _copy_fixture(tmp_path)
+    _copy_vector(tmp_path)
+
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+
+    result = runner.invoke(app, ["index", "tests/playground2"])
+    assert result.exit_code == 0
+
+    def _fake_embedder(texts):
+        embeddings = []
+        for text in texts:
+            seed = sum(ord(ch) for ch in text) % 7
+            embeddings.append([float(seed), float(seed + 1), float(seed + 2)])
+        return embeddings
+
+    monkeypatch.setattr(kdecli, "_require_embedder", lambda: _fake_embedder)
+
+    result = runner.invoke(app, ["examples", "build", "--from", "workspace", "--lang", "el"])
+    assert result.exit_code == 0
+
+    expected_llm = _count_untranslated(po_path)
+    assert expected_llm > 0
+
+    def _fake_translate(plan, config):
+        llm_entries = 0
+        examples_seen = 0
+        for file_item in plan.get("files", []):
+            file_path = Path(file_item.get("file_path", ""))
+            if not str(file_path):
+                continue
+            nplurals = _nplurals_from_file(Path.cwd() / file_path)
+            for entry in file_item.get("entries", []):
+                if entry.get("action") != "llm":
+                    continue
+                llm_entries += 1
+                prompt = entry.get("prompt") or {}
+                few_shot = prompt.get("few_shot_examples", "")
+                if isinstance(few_shot, str) and "1. Source:" in few_shot:
+                    examples_seen += 1
+                msgid_plural = str(entry.get("msgid_plural", ""))
+                if msgid_plural:
+                    entry["translation"] = {
+                        "msgstr": "",
+                        "msgstr_plural": {str(idx): f"el-{idx}" for idx in range(nplurals)},
+                    }
+                else:
+                    entry["translation"] = {"msgstr": "el-text", "msgstr_plural": {}}
+        assert llm_entries == expected_llm
+        assert examples_seen == llm_entries
+        return plan
+
+    monkeypatch.setattr(kdellm, "batch_translate_plan", _fake_translate)
+
+    result = runner.invoke(app, ["translate", "tests/playground2", "--lang", "el"])
+    assert result.exit_code == 0

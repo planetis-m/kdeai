@@ -15,6 +15,7 @@ dependencies = [
   "portalocker",
   "spacy",
   "sqlite-vector",
+  "openai",
   "typer",
   "pydantic",
   "dspy",

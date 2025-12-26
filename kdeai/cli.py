@@ -199,8 +199,61 @@ def _next_pointer_id(pointer_path: Path, key: str) -> int:
     return pointer_id + 1
 
 
-def _require_embedder() -> kdeexamples.EmbeddingFunc:
-    raise RuntimeError("Embedding support is not configured for this CLI.")
+def _examples_embed_policy(config: dict) -> dict[str, object] | None:
+    prompt = config.get("prompt") if isinstance(config, dict) else None
+    examples_cfg = prompt.get("examples") if isinstance(prompt, dict) else None
+    policy = examples_cfg.get("embedding_policy") if isinstance(examples_cfg, dict) else None
+    if not isinstance(policy, dict):
+        return None
+    return policy
+
+
+def _require_embedder(policy: dict[str, object] | None) -> kdeexamples.EmbeddingFunc:
+    from kdeai.embed_client import compute_embedding
+
+    def _embed(texts: Sequence[str]) -> list[list[float]]:
+        return [compute_embedding(text, policy=policy) for text in texts]
+
+    return _embed
+
+
+def _examples_mode_from_config(
+    config: dict,
+    override: ExamplesMode | None,
+) -> ExamplesMode:
+    if override is not None:
+        return override
+    prompt = config.get("prompt") if isinstance(config, dict) else None
+    examples_cfg = prompt.get("examples") if isinstance(prompt, dict) else None
+    mode_default = (
+        examples_cfg.get("mode_default")
+        if isinstance(examples_cfg, dict)
+        else None
+    )
+    if not mode_default:
+        return "auto"
+    return str(mode_default)
+
+
+def _maybe_embedder(
+    examples_mode: ExamplesMode,
+    policy: dict[str, object] | None,
+) -> kdeexamples.EmbeddingFunc | None:
+    if examples_mode == "off":
+        return None
+    try:
+        return _require_embedder(policy)
+    except Exception:
+        if examples_mode == "required":
+            raise
+        return None
+
+
+def _sqlite_vector_path(project_root: Path) -> str | None:
+    candidate = project_root / "vector.so"
+    if candidate.exists():
+        return str(candidate)
+    return None
 
 
 def _glossary_normalization_id(config: dict) -> str:
@@ -284,6 +337,7 @@ def _ensure_workspace_db(
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)", meta.items())
+            conn.commit()
         else:
             meta = kdedb.read_meta(conn)
             kdedb.validate_meta(
@@ -330,6 +384,12 @@ def plan(
     config = kdeconfig.load_config_from_root(project_root)
     _ = cache_write
     cache_mode = cache or "on"
+    resolved_examples_mode = _examples_mode_from_config(config.data, examples)
+    embedder = _maybe_embedder(
+        resolved_examples_mode,
+        _examples_embed_policy(config.data),
+    )
+    sqlite_vector_path = _sqlite_vector_path(project_root)
     plan_payload = kdeplan.build_plan(
         project_root=project_root,
         project_id=str(project["project_id"]),
@@ -341,6 +401,8 @@ def plan(
         cache=cache_mode,
         examples_mode=examples,
         glossary_mode=glossary,
+        embedder=embedder,
+        sqlite_vector_path=sqlite_vector_path,
     )
 
     if out is None:
@@ -441,6 +503,12 @@ def translate(
     config = kdeconfig.load_config_from_root(project_root)
     _ = cache_write
     cache_mode = cache or "on"
+    resolved_examples_mode = _examples_mode_from_config(config.data, examples)
+    embedder = _maybe_embedder(
+        resolved_examples_mode,
+        _examples_embed_policy(config.data),
+    )
+    sqlite_vector_path = _sqlite_vector_path(project_root)
 
     combined_plan = None
     files_written: list[str] = []
@@ -462,6 +530,8 @@ def translate(
             examples_mode=examples,
             glossary_mode=glossary,
             overwrite=overwrite,
+            embedder=embedder,
+            sqlite_vector_path=sqlite_vector_path,
         )
 
         # Phase 2: inference without holding any file locks.
@@ -656,7 +726,7 @@ def examples_build(
                 pass
 
         try:
-            embedder = _require_embedder()
+            embedder = _require_embedder(_examples_embed_policy(config.data))
         except Exception as exc:
             typer.secho(str(exc), err=True)
             raise typer.Exit(1) from exc
