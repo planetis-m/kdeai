@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kdeai"
+version = "0.0.0"
+description = "KDEAI translation system"
+readme = "SPEC.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "KDEAI" }]
+dependencies = [
+  "polib",
+  "portalocker",
+  "spacy",
+  "sqlite-vector",
+  "typer",
+  "pydantic",
+  "dspy",
+  "python-dotenv",
+  "openai",
+]
+
+[project.scripts]
+kdeai = "kdeai.cli:app"

@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from kdeai.config import Config
+from kdeai.llm import batch_translate_plan
+from kdeai.prompt import build_prompt_payload
+
+
+class _Example:
+    def __init__(self, source_text: str, msgstr: str) -> None:
+        self.source_text = source_text
+        self.msgstr = msgstr
+        self.msgstr_plural = {}
+
+
+class _Term:
+    def __init__(self, src_surface: str, tgt_primary: str) -> None:
+        self.src_surface = src_surface
+        self.tgt_primary = tgt_primary
+        self.tgt_alternates = []
+
+
+class _GlossaryMatch:
+    def __init__(self, term: _Term) -> None:
+        self.term = term
+
+
+def test_build_prompt_payload_includes_structured_fields() -> None:
+    payload = build_prompt_payload(
+        config={"languages": {"source": "en"}},
+        msgctxt=None,
+        msgid="File",
+        msgid_plural=None,
+        target_lang="de",
+        examples=[_Example("ctx:\nid:File\npl:", "Datei")],
+        glossary=[_GlossaryMatch(_Term("File", "Datei"))],
+    )
+
+    assert payload["source_context"] == ""
+    assert payload["source_text"] == "File"
+    assert payload["plural_text"] == ""
+    assert payload["target_lang"] == "de"
+    assert payload["glossary_context"] == "File -> Datei"
+    assert "1. Source:" in payload["few_shot_examples"]
+    assert payload["messages"][0]["role"] == "system"
+    assert payload["messages"][1]["role"] == "user"
+
+
+def _load_env_if_missing(keys: list[str]) -> None:
+    if any(os.getenv(key) for key in keys):
+        return
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        name = name.strip()
+        if name and name not in os.environ:
+            os.environ[name] = value.strip()
+    if not os.getenv("OPENAI_API_KEY") and os.getenv("OPENROUTER_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = os.environ["OPENROUTER_API_KEY"]
+
+
+def test_batch_translate_plan_updates_llm_entries() -> None:
+    _load_env_if_missing(["OPENAI_API_KEY", "OPENROUTER_API_KEY"])
+    if not os.getenv("OPENAI_API_KEY"):
+        raise AssertionError("OPENAI_API_KEY or OPENROUTER_API_KEY must be set for DSPy usage")
+
+    plan = {
+        "lang": "de",
+        "files": [
+            {
+                "file_path": "locale/de.po",
+                "entries": [
+                    {
+                        "msgctxt": "",
+                        "msgid": "File",
+                        "msgid_plural": "",
+                        "action": "llm",
+                        "prompt": {
+                            "source_context": "",
+                            "source_text": "File",
+                            "plural_text": "",
+                            "target_lang": "de",
+                            "glossary_context": "",
+                            "few_shot_examples": "",
+                        },
+                        "flags": {"add": ["keep"], "remove": ["old"]},
+                        "comments": {
+                            "remove_prefixes": ["KDEAI:"],
+                            "ensure_lines": ["KDEAI-AI: model=old"],
+                            "append": "",
+                        },
+                    },
+                    {
+                        "msgctxt": "",
+                        "msgid": "Files",
+                        "msgid_plural": "Files",
+                        "action": "llm",
+                        "prompt": {
+                            "source_context": "",
+                            "source_text": "Files",
+                            "plural_text": "Files",
+                            "target_lang": "de",
+                            "glossary_context": "",
+                            "few_shot_examples": "",
+                        },
+                    },
+                    {
+                        "msgctxt": "",
+                        "msgid": "Skip",
+                        "msgid_plural": "",
+                        "action": "copy_tm",
+                    },
+                ],
+            }
+        ],
+    }
+
+    config = Config(
+        data={
+            "prompt": {"generation_model_id": "openrouter/x-ai/grok-4-fast"},
+            "markers": {
+                "ai_flag": "kdeai-ai",
+                "comment_prefixes": {
+                    "tool": "KDEAI:",
+                    "ai": "KDEAI-AI:",
+                    "tm": "KDEAI-TM:",
+                    "review": "KDEAI-REVIEW:",
+                },
+            },
+            "apply": {
+                "tagging": {
+                    "llm": {"add_flags": ["fuzzy"], "add_ai_flag": True, "comment_prefix_key": "ai"}
+                }
+            },
+        },
+        config_hash="test",
+        embed_policy_hash="test",
+    )
+
+    batch_translate_plan(plan, config)
+
+    entries = plan["files"][0]["entries"]
+    singular = entries[0]
+    plural = entries[1]
+    skipped = entries[2]
+
+    assert singular["translation"]["msgstr"].strip()
+    assert singular["translation"]["msgstr_plural"] == {}
+    assert plural["translation"]["msgstr"] == ""
+    assert plural["translation"]["msgstr_plural"]["0"].strip()
+    assert plural["translation"]["msgstr_plural"]["1"].strip()
+    assert "translation" not in skipped
+
+    assert "fuzzy" in singular["flags"]["add"]
+    assert "kdeai-ai" in singular["flags"]["add"]
+    assert "keep" in singular["flags"]["add"]
+    assert singular["flags"]["remove"] == ["old"]
+    assert "KDEAI-AI:" in singular["comments"]["remove_prefixes"]
+    assert "KDEAI-AI: model=openrouter/x-ai/grok-4-fast" in singular["comments"]["ensure_lines"]
