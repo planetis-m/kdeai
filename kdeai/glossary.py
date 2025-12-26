@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 import json
+import re
 import sqlite3
 
 import spacy
@@ -13,6 +14,7 @@ from kdeai import db as kdedb
 from kdeai import hash as kdehash
 
 NORMALIZATION_ID = "kdeai_glossary_norm_v1"
+MAX_TERM_TOKENS = 4
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ class GlossaryNormalizer:
         self.normalization_id = normalization_id
 
     def normalize(self, text: str) -> list[str]:
-        doc = self._nlp(text)
+        doc = self._nlp(_preprocess_text(text))
         tokens: list[str] = []
         for token in doc:
             if token.is_space:
@@ -57,6 +59,27 @@ class GlossaryNormalizer:
             lemma = token.lemma_ if token.lemma_ else token.text
             tokens.append(lemma.casefold())
         return tokens
+
+
+def _clean_accelerators(text: str) -> str:
+    protected = text.replace("&&", "\x00")
+    stripped = protected.replace("&", "")
+    return stripped.replace("\x00", "&")
+
+
+def _strip_xml_tags(text: str) -> str:
+    return re.sub(r"<[^>]+>", " ", text)
+
+
+def _normalize_variables(text: str) -> str:
+    return re.sub(r"%[sd0-9]+", "<VAR>", text)
+
+
+def _preprocess_text(text: str) -> str:
+    text = _clean_accelerators(text)
+    text = _strip_xml_tags(text)
+    text = _normalize_variables(text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _load_spacy_model(model_name: str):
@@ -172,14 +195,20 @@ def build_glossary_db(
         file_path = str(row[6])
         file_sha256 = str(row[7])
 
-        if not msgid.strip():
+        cleaned_msgid = _preprocess_text(msgid)
+        if not cleaned_msgid:
             continue
         tgt_primary = _select_translation(msgstr, msgstr_plural)
         if not tgt_primary:
             continue
 
-        lemma_tokens = normalizer.normalize(msgid)
-        if not lemma_tokens:
+        lemma_tokens = normalizer.normalize(cleaned_msgid)
+        token_count = len(lemma_tokens)
+        if not lemma_tokens or token_count > MAX_TERM_TOKENS:
+            continue
+
+        cleaned_msgstr = _preprocess_text(tgt_primary)
+        if not cleaned_msgstr:
             continue
 
         term_key = kdehash.term_key(lemma_tokens)
@@ -191,15 +220,15 @@ def build_glossary_db(
             term_key=term_key,
             src_lang=src_lang,
             tgt_lang=lang,
-            src_surface=msgid,
+            src_surface=cleaned_msgid,
             src_lemma_seq=list(lemma_tokens),
-            token_count=len(lemma_tokens),
-            tgt_primary=tgt_primary,
+            token_count=token_count,
+            tgt_primary=cleaned_msgstr,
             tgt_alternates=[],
             freq=freq,
             score=score,
-            evidence_msgid=msgid,
-            evidence_msgstr=tgt_primary,
+            evidence_msgid=cleaned_msgid,
+            evidence_msgstr=cleaned_msgstr,
             file_path=file_path,
             source_key=source_key,
             file_sha256=file_sha256,
