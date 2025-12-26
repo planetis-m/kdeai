@@ -199,11 +199,11 @@ def _resolve_planner_inputs(
 def _build_plan_header(
     *,
     project: Project,
-    config: Config,
     lang: str,
     builder: kdeplan.PlanBuilder,
     apply_defaults: dict,
 ) -> dict:
+    config = project.config
     return {
         "format": kdeplan.PLAN_FORMAT_VERSION,
         "project_id": str(project.project_data["project_id"]),
@@ -291,8 +291,12 @@ def plan(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = Project.load_or_init(project_root)
-    config = project.config
+    try:
+        project = Project.load_or_init(project_root)
+        config = project.config
+    except Exception as exc:
+        typer.secho(f"Plan failed: {exc}", err=True)
+        raise typer.Exit(1)
     cache_mode = cache or "on"
     cache_write_flag = cache_write or "on"
     if cache_write_flag == "off":
@@ -317,7 +321,7 @@ def plan(
         config=config,
         lang=lang,
         cache=cache_mode,
-        cache_write=cache_write_flag,
+        cache_write="off",
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         embedder=embedder,
@@ -340,13 +344,12 @@ def plan(
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
         apply_cfg = _apply_defaults_from_config(config)
-        plan_payload = _build_plan_header(
-            project=project,
-            config=config,
-            lang=lang,
-            builder=builder,
-            apply_defaults=apply_cfg,
-        )
+    plan_payload = _build_plan_header(
+        project=project,
+        lang=lang,
+        builder=builder,
+        apply_defaults=apply_cfg,
+    )
         plan_payload["files"] = files_payload
     finally:
         builder.close()
@@ -436,8 +439,12 @@ def translate(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = Project.load_or_init(project_root)
-    config = project.config
+    try:
+        project = Project.load_or_init(project_root)
+        config = project.config
+    except Exception as exc:
+        typer.secho(f"Translate failed: {exc}", err=True)
+        raise typer.Exit(1)
     cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
     try:
@@ -496,7 +503,6 @@ def translate(
 
     plan_header = _build_plan_header(
         project=project,
-        config=config,
         lang=lang,
         builder=builder,
         apply_defaults=apply_defaults,
@@ -568,8 +574,12 @@ def index(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = Project.load_or_init(project_root)
-    config = project.config
+    try:
+        project = Project.load_or_init(project_root)
+        config = project.config
+    except Exception as exc:
+        typer.secho(f"Index failed: {exc}", err=True)
+        raise typer.Exit(1)
 
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold"))

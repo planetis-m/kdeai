@@ -78,7 +78,7 @@ class PlanBuilder:
         ) = po_utils.marker_settings_from_config(config)
         self.selected_overwrite = str(overwrite or config.apply.overwrite_default)
         self.cache_write = cache_write
-        self.assets = _build_assets(
+        assets, effective_examples_mode, effective_glossary_mode = _build_assets(
             project_root=project_root,
             project_id=project_id,
             config=config,
@@ -89,6 +89,9 @@ class PlanBuilder:
             embedder=embedder,
             sqlite_vector_path=sqlite_vector_path,
         )
+        self.assets = assets
+        self.examples_mode = effective_examples_mode
+        self.glossary_mode = effective_glossary_mode
         self.embedder = embedder
         self._debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
 
@@ -178,6 +181,7 @@ class PlanBuilder:
                 lang=self.lang,
                 eligibility=self.config.prompt.examples.eligibility,
                 review_status_order=self.config.tm.selection.review_status_order,
+                required=self.examples_mode == "required",
             )
             glossary_matches = _collect_glossary(
                 matcher=self.assets.glossary_matcher,
@@ -517,7 +521,7 @@ def _build_assets(
     glossary_mode: str | None,
     embedder: EmbeddingFunc | None,
     sqlite_vector_path: str | None,
-) -> PlannerAssets:
+) -> tuple[PlannerAssets, str, str]:
     config_hash = config.config_hash
     embed_policy_hash = config.embed_policy_hash
     if cache == "off":
@@ -617,15 +621,19 @@ def _build_assets(
             examples_db.conn.close()
             examples_db = None
 
-    return PlannerAssets(
-        workspace_conn=workspace_conn,
-        reference_conn=reference_conn,
-        examples_db=examples_db if embedder is not None else None,
-        glossary_conn=glossary_conn,
-        glossary_terms=glossary_terms,
-        glossary_matcher=glossary_matcher,
-        examples_top_n=examples_top_n,
-        glossary_max_terms=glossary_max_terms,
+    return (
+        PlannerAssets(
+            workspace_conn=workspace_conn,
+            reference_conn=reference_conn,
+            examples_db=examples_db if embedder is not None else None,
+            glossary_conn=glossary_conn,
+            glossary_terms=glossary_terms,
+            glossary_matcher=glossary_matcher,
+            examples_top_n=examples_top_n,
+            glossary_max_terms=glossary_max_terms,
+        ),
+        str(examples_mode),
+        str(glossary_mode),
     )
 
 
@@ -638,6 +646,7 @@ def _collect_examples(
     lang: str,
     eligibility: ExamplesEligibility,
     review_status_order: Sequence[str],
+    required: bool,
 ) -> list[kdeexamples.ExampleMatch]:
     if examples_db is None or embedder is None:
         return []
@@ -652,6 +661,8 @@ def _collect_examples(
             review_status_order=review_status_order,
         )
     except Exception:
+        if required:
+            raise
         return []
 
 
