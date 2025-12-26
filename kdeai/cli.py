@@ -188,6 +188,16 @@ def _parse_lang_from_bytes(po_bytes: bytes) -> Optional[str]:
     return None
 
 
+def _load_po_from_bytes(po_bytes: bytes) -> polib.POFile:
+    with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
+        tmp.write(po_bytes)
+        tmp_path = tmp.name
+    try:
+        return polib.pofile(tmp_path)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
 def _next_pointer_id(pointer_path: Path, key: str) -> int:
     if not pointer_path.exists():
         return 1
@@ -390,20 +400,68 @@ def plan(
         _examples_embed_policy(config.data),
     )
     sqlite_vector_path = _sqlite_vector_path(project_root)
-    plan_payload = kdeplan.build_plan(
+    path_casefold = bool(project.get("path_casefold", os.name == "nt"))
+    builder = kdeplan.PlanBuilder(
         project_root=project_root,
         project_id=str(project["project_id"]),
         config=config.data,
         config_hash=config.config_hash,
         embed_policy_hash=config.embed_policy_hash,
         lang=lang,
-        paths=paths,
         cache=cache_mode,
         examples_mode=examples,
         glossary_mode=glossary,
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
     )
+
+    files_payload: list[dict] = []
+    try:
+        for path in _iter_po_paths(project_root, paths):
+            relpath = _normalize_relpath(project_root, path)
+            relpath_key = _relpath_key(relpath, path_casefold)
+            lock_path = locks.per_file_lock_path(
+                project_root,
+                locks.lock_id(str(project["project_id"]), relpath_key),
+            )
+            locked = snapshot.locked_read_file(path, lock_path)
+            po_file = _load_po_from_bytes(locked.bytes)
+            file_draft = builder.build_draft(relpath, po_file)
+            file_draft["base_sha256"] = locked.sha256
+            files_payload.append(file_draft)
+    finally:
+        builder.close()
+
+    needs_llm: list[dict] = []
+    for file_item in files_payload:
+        entries = file_item.get("entries")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("action") == "needs_llm":
+                needs_llm.append(entry)
+
+    if needs_llm:
+        kdellm.batch_translate(needs_llm, config, target_lang=lang)
+
+    apply_cfg = config.data.get("apply") if isinstance(config.data, dict) else None
+    if not isinstance(apply_cfg, dict):
+        apply_cfg = {}
+    plan_payload = {
+        "format": kdeplan.PLAN_FORMAT_VERSION,
+        "project_id": str(project["project_id"]),
+        "config_hash": config.config_hash,
+        "lang": lang,
+        "marker_flags": list(builder.marker_flags),
+        "comment_prefixes": list(builder.comment_prefixes),
+        "ai_flag": builder.ai_flag,
+        "apply_defaults": {
+            "mode": str(apply_cfg.get("mode_default", "strict")),
+            "overwrite": str(apply_cfg.get("overwrite_default", "conservative")),
+            "post_index": "off",
+        },
+        "files": files_payload,
+    }
 
     if out is None:
         typer.echo(kdeplan.render_plan_json(plan_payload))

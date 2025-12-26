@@ -100,6 +100,14 @@ def _glossary_context(glossary: Sequence[GlossaryMatch]) -> str:
     return ", ".join(terms)
 
 
+def examples_context(examples: Sequence[ExampleMatch]) -> str:
+    return _format_examples(examples)
+
+
+def glossary_context(glossary: Sequence[GlossaryMatch]) -> str:
+    return _glossary_context(glossary)
+
+
 def _system_prompt(source_lang: str, target_lang: str) -> str:
     return "\n".join(
         [

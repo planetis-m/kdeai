@@ -42,6 +42,164 @@ class PlannerAssets:
     glossary_max_terms: int
 
 
+DraftPlan = dict[str, object]
+
+
+class PlanBuilder:
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        project_id: str,
+        config: Mapping[str, object],
+        config_hash: str,
+        embed_policy_hash: str,
+        lang: str,
+        cache: str = "on",
+        examples_mode: str | None = None,
+        glossary_mode: str | None = None,
+        overwrite: str | None = None,
+        session_tm: Mapping[object, object] | None = None,
+        embedder: EmbeddingFunc | None = None,
+        sqlite_vector_path: str | None = None,
+    ) -> None:
+        self.config = config
+        self.lang = lang
+        self.session_tm = session_tm
+        self.marker_flags, self.comment_prefixes, self.ai_flag = _marker_settings_from_config(
+            config
+        )
+        self.review_prefix = _review_prefix_from_config(config)
+        apply_cfg = config.get("apply") if isinstance(config, Mapping) else None
+        if not isinstance(apply_cfg, Mapping):
+            apply_cfg = {}
+        self.selected_overwrite = str(overwrite or apply_cfg.get("overwrite_default", "conservative"))
+        self.assets = _build_assets(
+            project_root=project_root,
+            project_id=project_id,
+            config=config,
+            config_hash=config_hash,
+            embed_policy_hash=embed_policy_hash,
+            lang=lang,
+            cache=cache,
+            examples_mode=examples_mode,
+            glossary_mode=glossary_mode,
+            embedder=embedder,
+            sqlite_vector_path=sqlite_vector_path,
+        )
+        self.embedder = embedder
+        self._debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
+
+    def close(self) -> None:
+        if self.assets.examples_db is not None:
+            self.assets.examples_db.conn.close()
+        if self.assets.workspace_conn is not None:
+            self.assets.workspace_conn.close()
+        if self.assets.reference_conn is not None:
+            self.assets.reference_conn.close()
+
+    def build_draft(
+        self,
+        file_path: str,
+        source_entries: Iterable[polib.POEntry],
+    ) -> DraftPlan:
+        entries_payload: list[dict] = []
+        total_entries = 0
+        skipped_overwrite = 0
+        tm_entries = 0
+        llm_entries = 0
+
+        for entry in source_entries:
+            if entry.obsolete or entry.msgid == "":
+                continue
+            total_entries += 1
+            current_non_empty = _has_non_empty_translation(entry)
+            reviewed = _is_reviewed(entry, self.review_prefix)
+            if not _can_overwrite(current_non_empty, reviewed, self.selected_overwrite):
+                skipped_overwrite += 1
+                continue
+            msgctxt = entry.msgctxt or ""
+            msgid = entry.msgid
+            msgid_plural = entry.msgid_plural or ""
+            base_state_hash = kdeapply.entry_state_hash(
+                entry,
+                lang=self.lang,
+                marker_flags=self.marker_flags,
+                comment_prefixes=self.comment_prefixes,
+            )
+            source_key = po_model.source_key_for(msgctxt, msgid, msgid_plural)
+            has_plural = bool(msgid_plural)
+            tm_candidate = retrieve_tm.lookup_tm_exact(
+                source_key,
+                self.lang,
+                has_plural=has_plural,
+                config=self.config,
+                session_tm=self.session_tm,
+                workspace_conn=self.assets.workspace_conn,
+                reference_conn=self.assets.reference_conn,
+            )
+            if tm_candidate is not None:
+                entries_payload.append(
+                    {
+                        "msgctxt": msgctxt,
+                        "msgid": msgid,
+                        "msgid_plural": msgid_plural,
+                        "base_state_hash": base_state_hash,
+                        "action": "copy_tm",
+                        "translation": {
+                            "msgstr": tm_candidate.msgstr,
+                            "msgstr_plural": tm_candidate.msgstr_plural,
+                        },
+                        "tm_scope": tm_candidate.scope,
+                    }
+                )
+                tm_entries += 1
+                continue
+
+            source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
+            examples = _collect_examples(
+                examples_db=self.assets.examples_db,
+                embedder=self.embedder,
+                source_text=source_text,
+                top_n=self.assets.examples_top_n,
+                lang=self.lang,
+            )
+            glossary_matches = _collect_glossary(
+                matcher=self.assets.glossary_matcher,
+                source_text=msgid,
+                max_terms=self.assets.glossary_max_terms,
+            )
+            entries_payload.append(
+                {
+                    "msgctxt": msgctxt,
+                    "msgid": msgid,
+                    "msgid_plural": msgid_plural,
+                    "base_state_hash": base_state_hash,
+                    "action": "needs_llm",
+                    "translation": {"msgstr": "", "msgstr_plural": {}},
+                    "examples": kdeprompt.examples_context(examples),
+                    "glossary_terms": kdeprompt.glossary_context(glossary_matches),
+                }
+            )
+            llm_entries += 1
+
+        if self._debug_enabled:
+            print(
+                "[kdeai][debug] plan",
+                file_path,
+                f"total_entries={total_entries}",
+                f"skipped_overwrite={skipped_overwrite}",
+                f"tm_entries={tm_entries}",
+                f"llm_entries={llm_entries}",
+                file=sys.stderr,
+            )
+
+        return {
+            "file_path": file_path,
+            "entries": entries_payload,
+        }
+
+
 def _sorted_entries(entries: list[dict]) -> list[dict]:
     return sorted(
         entries,

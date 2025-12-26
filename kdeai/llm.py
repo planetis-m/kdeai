@@ -215,6 +215,24 @@ def _prompt_for_entry(
     return prompt_payload
 
 
+def _prompt_payload_from_context(
+    entry: Mapping[str, object],
+    *,
+    target_lang: str,
+) -> dict[str, object]:
+    def _text(value: object) -> str:
+        return "" if value is None else str(value)
+
+    return {
+        "source_context": _text(entry.get("msgctxt", "")),
+        "source_text": _text(entry.get("msgid", "")),
+        "plural_text": _text(entry.get("msgid_plural", "")),
+        "target_lang": _text(target_lang),
+        "glossary_context": _text(entry.get("glossary_terms", "")),
+        "few_shot_examples": _text(entry.get("examples", "")),
+    }
+
+
 def _translation_payload(
     *,
     msgid_plural: str,
@@ -228,6 +246,46 @@ def _translation_payload(
             "msgstr_plural": {"0": translated_text, "1": plural_value},
         }
     return {"msgstr": translated_text, "msgstr_plural": {}}
+
+
+def batch_translate(
+    entries: Iterable[MutableMapping[str, object]],
+    config: Config,
+    *,
+    target_lang: str,
+) -> list[MutableMapping[str, object]]:
+    if dspy.settings.lm is None:
+        configure_dspy(config)
+    translator = KDEAITranslator()
+    model_id = _resolve_model_id(config)
+    normalized_lang = str(target_lang or "")
+
+    updated: list[MutableMapping[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, MutableMapping):
+            continue
+        if str(entry.get("action", "")) != "needs_llm":
+            continue
+        prompt_payload = _prompt_payload_from_context(
+            entry,
+            target_lang=normalized_lang,
+        )
+        prediction = translator(prompt_payload)
+        translated_text = str(getattr(prediction, "translated_text", ""))
+        translated_plural = str(getattr(prediction, "translated_plural", ""))
+        msgid_plural = str(entry.get("msgid_plural", ""))
+
+        entry["translation"] = _translation_payload(
+            msgid_plural=msgid_plural,
+            translated_text=translated_text,
+            translated_plural=translated_plural,
+        )
+        entry["prompt"] = prompt_payload
+        entry["action"] = "llm"
+        _apply_llm_tagging(entry, config=config.data, model_id=model_id)
+        updated.append(entry)
+
+    return updated
 
 
 def batch_translate_plan(plan: Plan, config: Config) -> Plan:
