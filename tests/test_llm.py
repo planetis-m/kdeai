@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 
 from kdeai.config import Config
@@ -68,6 +69,12 @@ def test_batch_translate_plan_updates_llm_entries() -> None:
     _load_env_if_missing(["OPENROUTER_API_KEY"])
     if not os.getenv("OPENROUTER_API_KEY"):
         raise AssertionError("OPENROUTER_API_KEY must be set for DSPy usage")
+    warnings.filterwarnings(
+        "ignore",
+        message="Pydantic serializer warnings:*",
+        category=UserWarning,
+        module="pydantic",
+    )
 
     plan = {
         "lang": "de",

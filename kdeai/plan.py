@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
+from typing import Callable, Iterable, Mapping, MutableMapping, Optional, Sequence, TYPE_CHECKING
 import json
 import os
 import sqlite3
@@ -198,6 +198,44 @@ class PlanBuilder:
             "file_path": file_path,
             "entries": entries_payload,
         }
+
+
+def generate_plan_for_file(
+    *,
+    project_root: Path,
+    project_id: str,
+    path: Path,
+    path_casefold: bool,
+    builder: PlanBuilder,
+    config: object,
+) -> DraftPlan:
+    relpath = _normalize_relpath(project_root, path)
+    relpath_key = _relpath_key(relpath, path_casefold)
+    lock_path = locks.per_file_lock_path(
+        project_root,
+        locks.lock_id(project_id, relpath_key),
+    )
+    locked = snapshot.locked_read_file(path, lock_path)
+    po_file = _load_po_from_bytes(locked.bytes)
+    file_draft = builder.build_draft(relpath, po_file)
+    file_draft["base_sha256"] = locked.sha256
+
+    entries = file_draft.get("entries")
+    if isinstance(entries, list):
+        needs_llm = [
+            entry
+            for entry in entries
+            if isinstance(entry, MutableMapping) and entry.get("action") == "needs_llm"
+        ]
+    else:
+        needs_llm = []
+
+    if needs_llm:
+        from kdeai import llm as kdellm
+
+        kdellm.batch_translate(needs_llm, config, target_lang=builder.lang)
+
+    return file_draft
 
 
 def _sorted_entries(entries: list[dict]) -> list[dict]:

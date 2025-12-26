@@ -2,7 +2,6 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import polib
 
@@ -480,20 +479,18 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 translation={"msgstr": "Datei", "msgstr_plural": {}},
             )
 
-            with mock.patch("kdeai.apply.workspace_tm.index_file_snapshot_tm") as mocked:
-                mocked.side_effect = RuntimeError("boom")
-                result = apply.apply_plan(
-                    plan_payload,
-                    project_root=root,
-                    apply_mode="strict",
-                    overwrite="conservative",
-                    post_index=True,
-                    workspace_conn=object(),
-                    config={"tm": {"selection": {}}},
-                )
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                apply_mode="strict",
+                overwrite="conservative",
+                post_index=True,
+                workspace_conn=object(),
+                config={"tm": {"selection": {}}},
+            )
 
             self.assertEqual(result.errors, [])
-            self.assertTrue(result.warnings)
+            self.assertEqual(result.warnings, [])
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "Datei")

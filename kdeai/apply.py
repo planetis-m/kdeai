@@ -15,7 +15,6 @@ from kdeai import locks
 from kdeai import po_model
 from kdeai import snapshot
 from kdeai import validate
-from kdeai import workspace_tm
 
 DEFAULT_COMMENT_PREFIXES = [
     "KDEAI:",
@@ -35,6 +34,17 @@ class ApplyResult:
     entries_applied: int
     errors: list[str]
     warnings: list[str]
+
+
+@dataclass(frozen=True)
+class ApplyFileResult:
+    file_path: str
+    wrote: bool
+    skipped: bool
+    entries_applied: int
+    errors: list[str]
+    warnings: list[str]
+    applied_entries: list[polib.POEntry]
 
 
 def _load_po_from_bytes(data: bytes) -> polib.POFile:
@@ -218,6 +228,135 @@ def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) 
     return 0
 
 
+def apply_plan_to_file(
+    file_path: str,
+    plan_items: list,
+    mode: str,
+    overwrite_policy: str,
+    *,
+    full_path: Path,
+    lock_path: Path,
+    base_sha256: str,
+    lang: str,
+    marker_flags: Iterable[str],
+    comment_prefixes: Iterable[str],
+    placeholder_patterns: Iterable[str],
+    review_prefix: str = "KDEAI-REVIEW:",
+) -> ApplyFileResult:
+    phase_a = snapshot.locked_read_file(full_path, lock_path)
+    if mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
+        return ApplyFileResult(file_path, False, True, 0, [], [], [])
+
+    po_file = _load_po_from_bytes(phase_a.bytes)
+    entry_map = {_entry_key(entry): entry for entry in po_file if entry.msgid != "" and not entry.obsolete}
+
+    to_apply: list[tuple[Mapping[str, object], polib.POEntry]] = []
+    mismatch = False
+    for entry_item in plan_items:
+        if not isinstance(entry_item, Mapping):
+            mismatch = True
+            break
+        key = (
+            str(entry_item.get("msgctxt", "")),
+            str(entry_item.get("msgid", "")),
+            str(entry_item.get("msgid_plural", "")),
+        )
+        entry = entry_map.get(key)
+        if entry is None:
+            if mode == "strict":
+                mismatch = True
+                break
+            continue
+        current_hash = _entry_state_hash(entry, lang, marker_flags, comment_prefixes)
+        base_state_hash = str(entry_item.get("base_state_hash", ""))
+        if current_hash != base_state_hash:
+            if mode == "strict":
+                mismatch = True
+                break
+            continue
+        to_apply.append((entry_item, entry))
+
+    if mismatch:
+        return ApplyFileResult(file_path, False, True, 0, [], [], [])
+
+    file_errors: list[str] = []
+    applied_entries: list[polib.POEntry] = []
+    applied_in_file = 0
+    for entry_item, entry in to_apply:
+        current_non_empty = _has_non_empty_translation(entry)
+        reviewed = _is_reviewed(entry, review_prefix)
+        if not _can_overwrite(current_non_empty, reviewed, overwrite_policy):
+            continue
+
+        translation = entry_item.get("translation") if isinstance(entry_item, Mapping) else None
+        if isinstance(translation, Mapping):
+            msgstr = str(translation.get("msgstr", ""))
+            msgstr_plural = translation.get("msgstr_plural", {})
+            if not isinstance(msgstr_plural, Mapping):
+                msgstr_plural = {}
+            _set_translation(entry, msgstr=msgstr, msgstr_plural=msgstr_plural)
+
+        flags = entry_item.get("flags") if isinstance(entry_item, Mapping) else None
+        if isinstance(flags, Mapping):
+            add_flags = flags.get("add", [])
+            remove_flags = flags.get("remove", [])
+            _apply_flags(entry, add_flags, remove_flags)
+
+        comments = entry_item.get("comments") if isinstance(entry_item, Mapping) else None
+        if isinstance(comments, Mapping):
+            remove_prefixes = comments.get("remove_prefixes", [])
+            ensure_lines = comments.get("ensure_lines", [])
+            append = str(comments.get("append", ""))
+            _apply_comments(entry, remove_prefixes, ensure_lines, append)
+
+        plural_forms = po_file.metadata.get("Plural-Forms")
+        validation_errors = validate.validate_entry(
+            msgid=entry.msgid,
+            msgid_plural=entry.msgid_plural or "",
+            msgstr=entry.msgstr or "",
+            msgstr_plural={str(k): str(v) for k, v in entry.msgstr_plural.items()},
+            plural_forms=plural_forms,
+            placeholder_patterns=placeholder_patterns,
+        )
+        if validation_errors:
+            file_errors.extend(validation_errors)
+            break
+
+        applied_in_file += 1
+        applied_entries.append(entry)
+
+    if file_errors:
+        return ApplyFileResult(file_path, False, True, 0, file_errors, [], [])
+
+    if applied_in_file == 0:
+        return ApplyFileResult(file_path, False, True, 0, [], [], [])
+
+    new_bytes = _serialize_po(po_file)
+
+    with locks.acquire_file_lock(lock_path):
+        current_bytes = full_path.read_bytes()
+        current_sha = hashlib.sha256(current_bytes).hexdigest()
+        if current_sha != phase_a.sha256:
+            return ApplyFileResult(file_path, False, True, 0, [], [], [])
+        if mode == "strict" and current_sha != base_sha256:
+            return ApplyFileResult(file_path, False, True, 0, [], [], [])
+        tmp_handle = tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(full_path.parent),
+            delete=False,
+        )
+        try:
+            tmp_handle.write(new_bytes)
+            tmp_handle.flush()
+            os.fsync(tmp_handle.fileno())
+            tmp_name = tmp_handle.name
+        finally:
+            tmp_handle.close()
+        os.replace(tmp_name, full_path)
+
+    return ApplyFileResult(file_path, True, False, applied_in_file, [], [], applied_entries)
+
+
 def apply_plan(
     plan: Mapping[str, object],
     *,
@@ -243,10 +382,7 @@ def apply_plan(
 
     selected_mode = str(apply_mode or defaults.get("mode") or "strict")
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
-    if post_index is None:
-        selected_post_index = str(defaults.get("post_index") or "off").lower() == "on"
-    else:
-        selected_post_index = bool(post_index)
+    _ = post_index, workspace_conn, config
 
     project_id = str(plan.get("project_id", ""))
     lang = str(plan.get("lang", ""))
@@ -280,128 +416,38 @@ def apply_plan(
             locks.lock_id(project_id, relpath_key),
         )
         full_path = project_root / file_path
-        phase_a = snapshot.locked_read_file(full_path, lock_path)
+        file_result = apply_plan_to_file(
+            file_path,
+            entries,
+            selected_mode,
+            selected_overwrite,
+            full_path=full_path,
+            lock_path=lock_path,
+            base_sha256=base_sha256,
+            lang=lang,
+            marker_flags=marker_flags,
+            comment_prefixes=comment_prefixes,
+            placeholder_patterns=placeholder_patterns,
+            review_prefix=review_prefix,
+        )
 
-        if selected_mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
+        if file_result.warnings:
+            warnings.extend(file_result.warnings)
+
+        if file_result.errors:
+            errors.extend(file_result.errors)
+            files_skipped.append(file_path)
+            continue
+        if file_result.skipped:
             files_skipped.append(file_path)
             continue
 
-        po_file = _load_po_from_bytes(phase_a.bytes)
-        entry_map = {_entry_key(entry): entry for entry in po_file if entry.msgid != "" and not entry.obsolete}
-
-        to_apply: list[tuple[Mapping[str, object], polib.POEntry]] = []
-        mismatch = False
-        for entry_item in entries:
-            if not isinstance(entry_item, Mapping):
-                mismatch = True
-                break
-            key = (
-                str(entry_item.get("msgctxt", "")),
-                str(entry_item.get("msgid", "")),
-                str(entry_item.get("msgid_plural", "")),
-            )
-            entry = entry_map.get(key)
-            if entry is None:
-                if selected_mode == "strict":
-                    mismatch = True
-                    break
-                continue
-            current_hash = _entry_state_hash(entry, lang, marker_flags, comment_prefixes)
-            base_state_hash = str(entry_item.get("base_state_hash", ""))
-            if current_hash != base_state_hash:
-                if selected_mode == "strict":
-                    mismatch = True
-                    break
-                continue
-            to_apply.append((entry_item, entry))
-
-        if mismatch:
-            files_skipped.append(file_path)
-            continue
-
-        file_errors: list[str] = []
-        applied_in_file = 0
-        for entry_item, entry in to_apply:
-            current_non_empty = _has_non_empty_translation(entry)
-            reviewed = _is_reviewed(entry, review_prefix)
-            if not _can_overwrite(current_non_empty, reviewed, selected_overwrite):
-                continue
-
-            translation = entry_item.get("translation") if isinstance(entry_item, Mapping) else None
-            if isinstance(translation, Mapping):
-                msgstr = str(translation.get("msgstr", ""))
-                msgstr_plural = translation.get("msgstr_plural", {})
-                if not isinstance(msgstr_plural, Mapping):
-                    msgstr_plural = {}
-                _set_translation(entry, msgstr=msgstr, msgstr_plural=msgstr_plural)
-
-            flags = entry_item.get("flags") if isinstance(entry_item, Mapping) else None
-            if isinstance(flags, Mapping):
-                add_flags = flags.get("add", [])
-                remove_flags = flags.get("remove", [])
-                _apply_flags(entry, add_flags, remove_flags)
-
-            comments = entry_item.get("comments") if isinstance(entry_item, Mapping) else None
-            if isinstance(comments, Mapping):
-                remove_prefixes = comments.get("remove_prefixes", [])
-                ensure_lines = comments.get("ensure_lines", [])
-                append = str(comments.get("append", ""))
-                _apply_comments(entry, remove_prefixes, ensure_lines, append)
-
-            plural_forms = po_file.metadata.get("Plural-Forms")
-            validation_errors = validate.validate_entry(
-                msgid=entry.msgid,
-                msgid_plural=entry.msgid_plural or "",
-                msgstr=entry.msgstr or "",
-                msgstr_plural={str(k): str(v) for k, v in entry.msgstr_plural.items()},
-                plural_forms=plural_forms,
-                placeholder_patterns=placeholder_patterns,
-            )
-            if validation_errors:
-                file_errors.extend(validation_errors)
-                break
-
-            applied_in_file += 1
-
-        if file_errors:
-            errors.extend(file_errors)
-            files_skipped.append(file_path)
-            continue
-
-        if applied_in_file == 0:
-            files_skipped.append(file_path)
-            continue
-
-        new_bytes = _serialize_po(po_file)
-
-        with locks.acquire_file_lock(lock_path):
-            current_bytes = full_path.read_bytes()
-            current_sha = hashlib.sha256(current_bytes).hexdigest()
-            if current_sha != phase_a.sha256:
-                files_skipped.append(file_path)
-                continue
-            if selected_mode == "strict" and current_sha != base_sha256:
-                files_skipped.append(file_path)
-                continue
-            tmp_handle = tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=str(full_path.parent),
-                delete=False,
-            )
-            try:
-                tmp_handle.write(new_bytes)
-                tmp_handle.flush()
-                os.fsync(tmp_handle.fileno())
-                tmp_name = tmp_handle.name
-            finally:
-                tmp_handle.close()
-            os.replace(tmp_name, full_path)
-
-        files_written.append(file_path)
-        entries_applied += applied_in_file
+        if file_result.wrote:
+            files_written.append(file_path)
+            entries_applied += file_result.entries_applied
 
         if session_tm is not None:
-            for entry_item, entry in to_apply:
+            for entry in file_result.applied_entries:
                 source_key = po_model.source_key_for(entry.msgctxt, entry.msgid, entry.msgid_plural)
                 msgstr_plural = {str(k): str(v) for k, v in entry.msgstr_plural.items()}
                 session_tm[(source_key, lang)] = {
@@ -410,21 +456,5 @@ def apply_plan(
                     "review_status": _derive_review_status(entry, review_prefix),
                     "is_ai_generated": _derive_is_ai_generated(entry, ai_flag, ai_prefix),
                 }
-
-        if selected_post_index and workspace_conn is not None:
-            stat = full_path.stat()
-            try:
-                workspace_tm.index_file_snapshot_tm(
-                    workspace_conn,
-                    file_path=file_path,
-                    lang=lang,
-                    bytes=new_bytes,
-                    sha256=hashlib.sha256(new_bytes).hexdigest(),
-                    mtime_ns=stat.st_mtime_ns,
-                    size=stat.st_size,
-                    config=config,
-                )
-            except Exception as exc:
-                warnings.append(f"post-index failed for {file_path}: {exc}")
 
     return ApplyResult(files_written, files_skipped, entries_applied, errors, warnings)

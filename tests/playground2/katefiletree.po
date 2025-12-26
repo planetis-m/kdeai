@@ -199,15 +199,17 @@ msgstr "Ταξινόμηση κατά σειρά ανοίγματος"
 msgid "Custom Sorting"
 msgstr "Προσαρμοσμένη ταξινόμηση"
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletree.cpp:404
-#, kde-format
+#, kde-format, fuzzy, kdeai-ai
 msgid "Open..."
-msgstr ""
+msgstr "Άνοιγμα..."
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletree.cpp:408
-#, kde-format
+#, kde-format, fuzzy, kdeai-ai
 msgid "Open File"
-msgstr ""
+msgstr "Άνοιγμα αρχείου"
 
 #: katefiletree.cpp:418
 #, kde-format
@@ -215,20 +217,23 @@ msgctxt "@action:inmenu"
 msgid "Open With"
 msgstr "Άνοιγμα με"
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletree.cpp:434
-#, kde-format
+#, kde-format, fuzzy, kdeai-ai
 msgid "Show Git History"
-msgstr ""
+msgstr "Εμφάνιση ιστορικού Git"
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletree.cpp:445
-#, kde-format
+#, kde-format, fuzzy, kdeai-ai
 msgid "Unpin Document"
-msgstr ""
+msgstr "Ξεκαρφίτσωμα εγγράφου"
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletree.cpp:447
-#, kde-format
+#, kde-format, fuzzy, kdeai-ai
 msgid "Pin Document"
-msgstr ""
+msgstr "Καρφίτσωμα εγγράφου"
 
 #: katefiletree.cpp:495
 #, kde-format
@@ -302,16 +307,17 @@ msgstr "&Εμφάνιση πλήρους διαδρομής"
 msgid "Show &Toolbar"
 msgstr "Εμφάνιση &γραμμής εργαλείων"
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletreeconfigpage.cpp:96
-#, kde-format
-#| msgid "Show Close Button"
+#, kde-format, fuzzy, kdeai-ai
 msgid "Show Close Button On Hovering"
-msgstr ""
+msgstr "Εμφάνιση κουμπιού κλεισίματος κατά το πέρασμα του ποντικιού"
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletreeconfigpage.cpp:99
-#, kde-format
+#, kde-format, fuzzy, kdeai-ai
 msgid "Middle Click To Close Documents"
-msgstr ""
+msgstr "Κλικ με το Μεσαίο Κουμπί για Κλείσιμο Εγγράφων"
 
 #: katefiletreeconfigpage.cpp:105
 #, kde-format
@@ -380,15 +386,18 @@ msgstr "Ανοικτά γραφικά συστατικά"
 #, kde-format
 msgctxt "%1 is the full path"
 msgid ""
-"<p><b>%1</b></p><p>The document has been modified by another application.</p>"
+"<p><b>%1</b></p><p>The document has been modified by another "
+"application.</p>"
 msgstr ""
-"<p><b>%1</b></p><p>Το έγγραφο έχει τροποποιηθεί από κάποια άλλη εφαρμογή.</p>"
+"<p><b>%1</b></p><p>Το έγγραφο έχει τροποποιηθεί από κάποια άλλη "
+"εφαρμογή.</p>"
 
+# KDEAI-AI: model=openrouter/x-ai/grok-4-fast
 #: katefiletreeplugin.cpp:174
-#, kde-format
+#, kde-format, fuzzy, kdeai-ai
 #| msgid "&Other..."
 msgid "Filter…"
-msgstr ""
+msgstr "Φίλτρο…"
 
 #: katefiletreeplugin.cpp:253
 #, kde-format
@@ -466,8 +475,6 @@ msgstr "&Μετάβαση"
 #~ msgstr "dimkard@gmail.com"
 
 #, fuzzy
-#~| msgctxt "@action:inmenu"
-#~| msgid "Close Other"
 #~ msgid "Close Widget"
 #~ msgstr "Κλείσιμο των άλλων"
 
