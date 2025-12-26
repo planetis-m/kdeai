@@ -14,7 +14,11 @@ def sha256_hex_text(text: str) -> str:
 
 
 def canonical_json(obj: object) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def canonical_json_bytes(obj: object) -> bytes:
+    return canonical_json(obj).encode("utf-8")
 
 
 def source_key(msgctxt: str, msgid: str, msgid_plural: str) -> str:

@@ -36,6 +36,7 @@ app.add_typer(glossary_app, name="glossary")
 OnOff = Literal["on", "off"]
 CacheMode = Literal["off", "on"]
 ExamplesMode = Literal["off", "auto", "required"]
+GlossaryMode = Literal["off", "auto", "required"]
 ApplyMode = Literal["strict", "rebase"]
 OverwriteMode = Literal["conservative", "allow-nonempty", "allow-reviewed", "all"]
 ExamplesScope = Literal["workspace", "reference"]
@@ -45,16 +46,7 @@ def _project_dir(project_root: Path) -> Path:
     return project_root / ".kdeai"
 
 
-def _project_path(project_root: Path) -> Path:
-    return _project_dir(project_root) / "project.json"
-
-
 _read_json = po_utils.read_json
-
-
-def _write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(kdehash.canonical_json(payload), encoding="utf-8")
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -62,50 +54,6 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(kdehash.canonical_json(payload), encoding="utf-8")
     os.replace(tmp_path, path)
-
-
-def _path_casefold() -> bool:
-    return os.name == "nt"
-
-
-def _generate_project_id(project_dir: Path) -> tuple[str, str]:
-    try:
-        stat = project_dir.stat()
-        if os.name != "nt" and getattr(stat, "st_ino", None) is not None:
-            payload = f"{stat.st_dev}\n{stat.st_ino}"
-            return kdehash.sha256_hex_text(payload), "posix_dev_ino"
-    except OSError:
-        pass
-
-    payload = str(project_dir.resolve())
-    return kdehash.sha256_hex_text(payload), "realpath_fallback"
-
-
-def _load_project(project_root: Path) -> dict:
-    project_path = _project_path(project_root)
-    project = _read_json(project_path, "project.json")
-    if "project_id" not in project:
-        raise ValueError("project.json missing project_id")
-    return project
-
-
-def _ensure_project(project_root: Path) -> dict:
-    project_path = _project_path(project_root)
-    if project_path.exists():
-        return _load_project(project_root)
-
-    project_dir = _project_dir(project_root)
-    project_dir.mkdir(parents=True, exist_ok=True)
-    project_id, method = _generate_project_id(project_dir)
-    payload = {
-        "format": 1,
-        "project_id": project_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "path_casefold": _path_casefold(),
-        "method": method,
-    }
-    _write_json(project_path, payload)
-    return payload
 
 
 def _acquire_run_lock(project_root: Path, ctx: typer.Context) -> None:
@@ -173,6 +121,15 @@ def _examples_mode_from_config(
     if override is not None:
         return override
     return str(config.prompt.examples.mode_default or "auto")
+
+
+def _glossary_mode_from_config(
+    config: Config,
+    override: GlossaryMode | None,
+) -> GlossaryMode:
+    if override is not None:
+        return override
+    return str(config.prompt.glossary.mode_default or "auto")
 
 
 def _maybe_embedder(
@@ -264,8 +221,10 @@ def main(ctx: typer.Context) -> None:
 @app.command()
 def init() -> None:
     project_root = Path.cwd()
-    project = _ensure_project(project_root)
-    typer.echo(f"Initialized project {project['project_id']} at {_project_dir(project_root)}.")
+    project = Project.load_or_init(project_root)
+    typer.echo(
+        f"Initialized project {project.project_data['project_id']} at {_project_dir(project_root)}."
+    )
     config_path = project_root / ".kdeai" / "config.json"
     if not config_path.exists():
         typer.secho("Missing .kdeai/config.json. Create it before planning or indexing.", err=True)
@@ -279,22 +238,29 @@ def plan(
     cache: Optional[CacheMode] = typer.Option(None, "--cache"),
     cache_write: Optional[OnOff] = typer.Option(None, "--cache-write"),
     examples: Optional[ExamplesMode] = typer.Option(None, "--examples"),
-    glossary: Optional[ExamplesMode] = typer.Option(None, "--glossary"),
+    glossary: Optional[GlossaryMode] = typer.Option(None, "--glossary"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = Project.load(project_root)
+    project = Project.load_or_init(project_root)
     config = project.config
     cache_mode = cache or "on"
     cache_write_flag = cache_write or "on"
     if cache_write_flag == "off":
         typer.secho("Note: plan never writes cache; --cache-write has no effect.", err=True)
     resolved_examples_mode = _examples_mode_from_config(config, examples)
-    embedder = _maybe_embedder(
-        resolved_examples_mode,
-        _examples_embed_policy(config),
-    )
-    sqlite_vector_path = _sqlite_vector_path(project_root)
+    resolved_glossary_mode = _glossary_mode_from_config(config, glossary)
+    if cache_mode == "off":
+        resolved_examples_mode = "off"
+        resolved_glossary_mode = "off"
+        embedder = None
+        sqlite_vector_path = None
+    else:
+        embedder = _maybe_embedder(
+            resolved_examples_mode,
+            _examples_embed_policy(config),
+        )
+        sqlite_vector_path = _sqlite_vector_path(project_root)
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
@@ -302,8 +268,8 @@ def plan(
         config=config,
         lang=lang,
         cache=cache_mode,
-        examples_mode=examples,
-        glossary_mode=glossary,
+        examples_mode=resolved_examples_mode,
+        glossary_mode=resolved_glossary_mode,
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
     )
@@ -324,14 +290,15 @@ def plan(
     finally:
         builder.close()
 
+    files_payload.sort(key=lambda item: str(item.get("file_path", "")))
     apply_cfg = _apply_defaults_from_config(config)
     plan_payload = {
         "format": kdeplan.PLAN_FORMAT_VERSION,
         "project_id": str(project.project_data["project_id"]),
         "config_hash": config.config_hash,
         "lang": lang,
-        "marker_flags": list(builder.marker_flags),
-        "comment_prefixes": list(builder.comment_prefixes),
+        "marker_flags": sorted(builder.marker_flags),
+        "comment_prefixes": sorted(builder.comment_prefixes),
         "ai_flag": builder.ai_flag,
         "placeholder_patterns": list(config.apply.validation_patterns),
         "apply_defaults": {
@@ -362,7 +329,7 @@ def apply(
     post_index_flag = post_index == "on"
     workspace_conn = None
     try:
-        project = Project.load(project_root)
+        project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
         typer.secho(f"Apply failed: {exc}", err=True)
@@ -420,20 +387,27 @@ def translate(
     cache: Optional[CacheMode] = typer.Option(None, "--cache"),
     cache_write: Optional[OnOff] = typer.Option(None, "--cache-write"),
     examples: Optional[ExamplesMode] = typer.Option(None, "--examples"),
-    glossary: Optional[ExamplesMode] = typer.Option(None, "--glossary"),
+    glossary: Optional[GlossaryMode] = typer.Option(None, "--glossary"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = Project.load(project_root)
+    project = Project.load_or_init(project_root)
     config = project.config
     cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
     resolved_examples_mode = _examples_mode_from_config(config, examples)
-    embedder = _maybe_embedder(
-        resolved_examples_mode,
-        _examples_embed_policy(config),
-    )
-    sqlite_vector_path = _sqlite_vector_path(project_root)
+    resolved_glossary_mode = _glossary_mode_from_config(config, glossary)
+    if cache_mode == "off":
+        resolved_examples_mode = "off"
+        resolved_glossary_mode = "off"
+        embedder = None
+        sqlite_vector_path = None
+    else:
+        embedder = _maybe_embedder(
+            resolved_examples_mode,
+            _examples_embed_policy(config),
+        )
+        sqlite_vector_path = _sqlite_vector_path(project_root)
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(config)
@@ -447,8 +421,8 @@ def translate(
         config=config,
         lang=lang,
         cache=cache_mode,
-        examples_mode=examples,
-        glossary_mode=glossary,
+        examples_mode=resolved_examples_mode,
+        glossary_mode=resolved_glossary_mode,
         overwrite=overwrite,
         session_tm={},
         embedder=embedder,
@@ -479,8 +453,8 @@ def translate(
         "project_id": str(project.project_data["project_id"]),
         "config_hash": config.config_hash,
         "lang": lang,
-        "marker_flags": list(builder.marker_flags),
-        "comment_prefixes": list(builder.comment_prefixes),
+        "marker_flags": sorted(builder.marker_flags),
+        "comment_prefixes": sorted(builder.comment_prefixes),
         "ai_flag": builder.ai_flag,
         "placeholder_patterns": list(config.apply.validation_patterns),
         "apply_defaults": {
@@ -520,6 +494,7 @@ def translate(
                     typer.secho(error, err=True)
                 if out is not None:
                     combined_plan = dict(plan_header)
+                    files_payload.sort(key=lambda item: str(item.get("file_path", "")))
                     combined_plan["files"] = files_payload
                     kdeplan.write_plan(out, combined_plan)
                 raise typer.Exit(1)
@@ -534,6 +509,7 @@ def translate(
 
         if out is not None:
             combined_plan = dict(plan_header)
+            files_payload.sort(key=lambda item: str(item.get("file_path", "")))
             combined_plan["files"] = files_payload
             kdeplan.write_plan(out, combined_plan)
     finally:
@@ -554,10 +530,9 @@ def index(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = Project.load(project_root)
+    project = Project.load_or_init(project_root)
     config = project.config
 
-    errors: list[str] = []
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold"))
     conn = _ensure_workspace_db(
@@ -599,12 +574,9 @@ def index(
                     typer.secho(message, err=True)
                     raise typer.Exit(1)
                 typer.secho(f"Warning: {message}", err=True)
-                errors.append(message)
     finally:
         conn.close()
 
-    if errors:
-        raise typer.Exit(1)
     typer.echo("Workspace TM index updated.")
 
 
@@ -616,7 +588,7 @@ def reference_build(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = Project.load(project_root)
+        project = Project.load_or_init(project_root)
         config = project.config
         snapshot = kderef.build_reference_snapshot(
             project_root,
@@ -655,7 +627,7 @@ def examples_build(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = Project.load(project_root)
+        project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
         typer.secho(f"Examples build failed: {exc}", err=True)
@@ -794,7 +766,7 @@ def glossary_build(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = Project.load(project_root)
+        project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
         typer.secho(f"Glossary build failed: {exc}", err=True)
@@ -888,7 +860,7 @@ def gc(
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     try:
-        project = Project.load(project_root)
+        project = Project.load_or_init(project_root)
         config = project.config
         report = kdegc.gc_workspace_tm(
             project_root,

@@ -3,14 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 import hashlib
-import json
 
+from kdeai import hash as kdehash
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 
 def compute_canonical_hash(data: dict) -> str:
-    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    canonical = kdehash.canonical_json_bytes(data)
+    return hashlib.sha256(canonical).hexdigest()
 
 
 class _BaseModel(BaseModel):

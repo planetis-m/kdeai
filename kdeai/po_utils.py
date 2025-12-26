@@ -94,7 +94,7 @@ def iter_po_paths(project_root: Path, raw_paths: Optional[list[Path]]) -> list[P
                 continue
             seen.add(resolved)
             results.append(resolved)
-    return results
+    return sorted(results, key=lambda item: str(item))
 
 
 def normalize_relpath(project_root: Path, path: Path) -> str:

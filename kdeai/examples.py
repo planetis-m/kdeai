@@ -113,7 +113,8 @@ def _iter_workspace_rows(conn: sqlite3.Connection, lang: str):
         "t.translation_hash, t.file_path "
         "FROM sources s "
         "JOIN best_translations t ON t.source_key = s.source_key "
-        "WHERE t.lang = ?"
+        "WHERE t.lang = ? "
+        "ORDER BY t.source_key"
     )
     return conn.execute(query, (lang,))
 
@@ -125,7 +126,8 @@ def _iter_reference_rows(conn: sqlite3.Connection, lang: str):
         "t.translation_hash, t.file_path, t.file_sha256 "
         "FROM sources s "
         "JOIN best_translations t ON t.source_key = s.source_key "
-        "WHERE t.lang = ?"
+        "WHERE t.lang = ? "
+        "ORDER BY t.source_key"
     )
     return conn.execute(query, (lang,))
 
@@ -486,7 +488,7 @@ def _vector_query_sql(
         "JOIN vector_quantize_scan('examples', 'embedding', ?, ?) v "
         "ON e.id = v.rowid "
         f"{where_clause} "
-        "ORDER BY v.distance"
+        "ORDER BY v.distance, e.source_key, e.translation_hash, e.file_path, e.file_sha256"
     )
 
 
@@ -543,13 +545,25 @@ def query_examples(
         review_statuses=review_statuses,
         allow_ai_generated=allow_ai_generated,
     )
-    params: list[object] = [blob, int(top_n)]
-    if lang is not None:
-        params.append(lang)
-    if review_statuses:
-        params.extend(review_statuses)
+    scan_limit = int(top_n)
+    has_filters = lang is not None or bool(review_statuses) or allow_ai_generated is False
+    max_scan = max(scan_limit, min(scan_limit * 50, 10000))
+    if has_filters:
+        scan_limit = min(max(scan_limit * 5, scan_limit), max_scan)
 
-    rows = db.conn.execute(sql, params).fetchall()
+    rows: list[sqlite3.Row] = []
+    while True:
+        params: list[object] = [blob, int(scan_limit)]
+        if lang is not None:
+            params.append(lang)
+        if review_statuses:
+            params.extend(review_statuses)
+        rows = db.conn.execute(sql, params).fetchall()
+        if not has_filters or len(rows) >= top_n or scan_limit >= max_scan:
+            break
+        scan_limit = min(scan_limit * 2, max_scan)
+
+    rows = rows[:top_n]
     matches: list[ExampleMatch] = []
     for row in rows:
         matches.append(
