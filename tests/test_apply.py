@@ -959,6 +959,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid": "File",
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_hash,
+                                "action": "copy_tm",
                                 "translation": {"msgstr": "Datei", "msgstr_plural": {}},
                             }
                         ],

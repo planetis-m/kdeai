@@ -304,7 +304,7 @@ def apply_plan_to_file(
         to_apply.append((entry_item, entry, action))
 
     if mismatch:
-        return ApplyFileResult(file_path, False, True, 0, [], [], [])
+        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     file_errors: list[str] = []
     applied_entries: list[polib.POEntry] = []
