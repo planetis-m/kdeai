@@ -6,7 +6,7 @@ from pathlib import Path
 import types
 
 from conftest import build_config
-from kdeai.llm import batch_translate_plan
+from kdeai.llm import batch_translate
 from kdeai.prompt import build_prompt_payload
 
 
@@ -66,7 +66,7 @@ def _load_env_if_missing(keys: list[str]) -> None:
             os.environ[name] = value.strip()
 
 
-def test_batch_translate_plan_updates_needs_llm_entries() -> None:
+def test_batch_translate_updates_needs_llm_entries() -> None:
     _load_env_if_missing(["OPENROUTER_API_KEY"])
     if not os.getenv("OPENROUTER_API_KEY"):
         raise AssertionError("OPENROUTER_API_KEY must be set for DSPy usage")
@@ -88,28 +88,12 @@ def test_batch_translate_plan_updates_needs_llm_entries() -> None:
                             "msgid": "File",
                             "msgid_plural": "",
                             "action": "llm",
-                            "prompt": {
-                                "source_context": "",
-                                "source_text": "File",
-                                "plural_text": "",
-                                "target_lang": "de",
-                                "glossary_context": "",
-                                "few_shot_examples": "",
-                            },
                         },
                         {
                             "msgctxt": "",
                             "msgid": "Files",
                             "msgid_plural": "Files",
                             "action": "llm",
-                            "prompt": {
-                                "source_context": "",
-                                "source_text": "Files",
-                                "plural_text": "Files",
-                                "target_lang": "de",
-                                "glossary_context": "",
-                                "few_shot_examples": "",
-                            },
                         },
                     {
                         "msgctxt": "",
@@ -144,7 +128,7 @@ def test_batch_translate_plan_updates_needs_llm_entries() -> None:
             return types.SimpleNamespace(translated_text="Datei", translated_plural="Dateien")
 
         kdellm.KDEAITranslator.forward = _fake_forward
-        batch_translate_plan(plan, config)
+        batch_translate(plan["files"][0]["entries"], config, target_lang=plan["lang"])
     finally:
         kdellm.KDEAITranslator.forward = original_forward
 
@@ -164,7 +148,7 @@ def test_batch_translate_plan_updates_needs_llm_entries() -> None:
     assert plural["tag_profile"] == "llm"
 
 
-def test_batch_translate_plan_adds_prompt_and_tags_for_needs_llm() -> None:
+def test_batch_translate_adds_tags_for_needs_llm() -> None:
     _load_env_if_missing(["OPENROUTER_API_KEY"])
     if not os.getenv("OPENROUTER_API_KEY"):
         raise AssertionError("OPENROUTER_API_KEY must be set for DSPy usage")
@@ -216,7 +200,7 @@ def test_batch_translate_plan_adds_prompt_and_tags_for_needs_llm() -> None:
             return types.SimpleNamespace(translated_text="Speichern", translated_plural="")
 
         kdellm.KDEAITranslator.forward = _fake_forward
-        batch_translate_plan(plan, config)
+        batch_translate(plan["files"][0]["entries"], config, target_lang=plan["lang"])
     finally:
         kdellm.KDEAITranslator.forward = original_forward
 
@@ -225,3 +209,4 @@ def test_batch_translate_plan_adds_prompt_and_tags_for_needs_llm() -> None:
     assert entry["translation"]["msgstr"].strip()
     assert entry["translation"]["msgstr_plural"] == {}
     assert entry["tag_profile"] == "llm"
+    assert "prompt" not in entry

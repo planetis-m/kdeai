@@ -164,9 +164,21 @@ def _glossary_normalization_id(config: Config) -> str:
     return str(config.prompt.glossary.normalization_id or kdeglo.NORMALIZATION_ID)
 
 
-def _apply_defaults_from_config(config: Config, *, overwrite_default: str | None = None) -> dict:
+def _note_cache_write_noop(command_name: str) -> None:
+    typer.secho(
+        f"Note: {command_name} does not write cache; --cache-write has no effect.",
+        err=True,
+    )
+
+
+def _apply_defaults_from_config(
+    config: Config,
+    *,
+    overwrite_default: str | None = None,
+    apply_mode_default: str | None = None,
+) -> dict:
     return {
-        "apply_mode": str(config.apply.mode_default),
+        "apply_mode": str(apply_mode_default or config.apply.mode_default),
         "overwrite": str(overwrite_default or config.apply.overwrite_default),
         "post_index": "off",
     }
@@ -303,13 +315,10 @@ def plan(
         config = project.config
     except Exception as exc:
         _exit_with_error(f"Plan failed: {exc}")
-    cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
-    if cache_write_flag == "off":
-        typer.secho("Note: translate does not write cache; --cache-write has no effect.", err=True)
     cache_write_flag = cache_write or "on"
     if cache_write_flag == "off":
-        typer.secho("Note: plan never writes cache; --cache-write has no effect.", err=True)
+        _note_cache_write_noop("plan")
     try:
         resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
             _resolve_planner_inputs(
@@ -451,6 +460,9 @@ def translate(
     except Exception as exc:
         _exit_with_error(f"Translate failed: {exc}")
     cache_mode = cache or "on"
+    cache_write_flag = cache_write or "on"
+    if cache_write_flag == "off":
+        _note_cache_write_noop("translate")
     try:
         resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
             _resolve_planner_inputs(
@@ -466,7 +478,11 @@ def translate(
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
-    apply_defaults = _apply_defaults_from_config(config, overwrite_default=overwrite)
+    apply_defaults = _apply_defaults_from_config(
+        config,
+        overwrite_default=overwrite,
+        apply_mode_default=apply_mode,
+    )
 
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
@@ -765,7 +781,7 @@ def examples_build(
                 "snapshot_id": int(pointer.get("snapshot_id", 0)),
             }
 
-        meta = {}
+        meta_db = None
         try:
             meta_db = kdeexamples.open_examples_db(
                 output_path,
@@ -775,9 +791,11 @@ def examples_build(
                 sqlite_vector_path=sqlite_vector_path,
             )
             meta = dict(meta_db.meta)
-            meta_db.conn.close()
-        except Exception:
-            meta = {}
+        except Exception as exc:
+            _exit_with_error(f"Examples build failed: {exc}")
+        finally:
+            if meta_db is not None:
+                meta_db.conn.close()
         created_at = meta.get("created_at") or datetime.now(timezone.utc).isoformat()
         pointer_payload = {
             "ex_id": ex_id,
@@ -871,16 +889,25 @@ def glossary_build(
     finally:
         reference_conn.close()
 
-    created_at = datetime.now(timezone.utc).isoformat()
+    conn = None
     try:
         conn = kdedb.connect_readonly(output_path)
-        try:
-            meta = kdedb.read_meta(conn)
-        finally:
+        kdedb.validate_meta_table(
+            conn,
+            expected_project_id=str(project.project_data["project_id"]),
+            expected_config_hash=config.config_hash,
+            expected_kind=DbKind.GLOSSARY,
+            expected_normalization_id=_glossary_normalization_id(config),
+        )
+        meta = kdedb.read_meta(conn)
+        created_at = meta.get("created_at")
+        if not created_at:
+            raise ValueError("Missing created_at in glossary meta")
+    except Exception as exc:
+        _exit_with_error(f"Glossary build failed: {exc}")
+    finally:
+        if conn is not None:
             conn.close()
-        created_at = meta.get("created_at") or created_at
-    except Exception:
-        created_at = created_at
 
     pointer_payload = {
         "snapshot_id": reference_snapshot_id,

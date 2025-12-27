@@ -39,7 +39,6 @@ class PlanEntry(TypedDict, total=False):
     msgid: str
     msgid_plural: str
     action: str
-    prompt: Mapping[str, object]
     translation: Mapping[str, object]
     tag_profile: str
 
@@ -66,28 +65,6 @@ def build_prompt_payload(
     *,
     target_lang: str,
 ) -> dict[str, object]:
-    prompt_payload: dict[str, object] = {}
-    prompt_data = entry.get("prompt")
-    if isinstance(prompt_data, Mapping):
-        for key in (
-            "source_context",
-            "source_text",
-            "plural_text",
-            "target_lang",
-            "glossary_context",
-            "few_shot_examples",
-        ):
-            if key in prompt_data:
-                prompt_payload[key] = prompt_data.get(key)
-
-        prompt_payload.setdefault("source_context", entry.get("msgctxt", ""))
-        prompt_payload.setdefault("source_text", entry.get("msgid", ""))
-        prompt_payload.setdefault("plural_text", entry.get("msgid_plural", ""))
-        prompt_payload.setdefault("target_lang", target_lang)
-        prompt_payload.setdefault("glossary_context", "")
-        prompt_payload.setdefault("few_shot_examples", "")
-        return prompt_payload
-
     def _text(value: object) -> str:
         return "" if value is None else str(value)
 
@@ -158,50 +135,8 @@ def batch_translate(
             translated_text=translated_text,
             translated_plural=translated_plural,
         )
-        entry["prompt"] = prompt_payload
         entry["action"] = PlanAction.LLM
         entry["tag_profile"] = "llm"
         updated.append(entry)
 
     return updated
-
-
-def batch_translate_plan(plan: Plan, config: Config) -> Plan:
-    if dspy.settings.lm is None:
-        configure_dspy(config)
-    translator = KDEAITranslator()
-    target_lang = str(plan.get("lang", ""))
-
-    files = plan.get("files")
-    if not isinstance(files, Iterable):
-        return plan
-
-    for file_item in files:
-        if not isinstance(file_item, MutableMapping):
-            continue
-        entries = file_item.get("entries")
-        if not isinstance(entries, Iterable):
-            continue
-        for entry in entries:
-            if not isinstance(entry, MutableMapping):
-                continue
-            if str(entry.get("action", "")) != PlanAction.LLM:
-                continue
-            if _has_translation_payload(entry.get("translation")):
-                continue
-            prompt_payload = build_prompt_payload(entry, target_lang=target_lang)
-            prediction = translator(prompt_payload)
-            translated_text = str(getattr(prediction, "translated_text", ""))
-            translated_plural = str(getattr(prediction, "translated_plural", ""))
-            msgid_plural = str(entry.get("msgid_plural", ""))
-
-            entry["translation"] = _translation_payload(
-                msgid_plural=msgid_plural,
-                translated_text=translated_text,
-                translated_plural=translated_plural,
-            )
-            entry["prompt"] = prompt_payload
-            entry["action"] = PlanAction.LLM
-            entry["tag_profile"] = "llm"
-
-    return plan
