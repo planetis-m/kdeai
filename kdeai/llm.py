@@ -41,8 +41,7 @@ class PlanEntry(TypedDict, total=False):
     action: str
     prompt: Mapping[str, object]
     translation: Mapping[str, object]
-    flags: Mapping[str, object]
-    comments: Mapping[str, object]
+    tag_profile: str
 
 
 Plan = dict[str, object]
@@ -59,85 +58,6 @@ def _normalize_prompt_data(prompt: Mapping[str, object]) -> dict[str, str]:
         "target_lang": _text(prompt.get("target_lang")),
         "glossary_context": _text(prompt.get("glossary_context")),
         "few_shot_examples": _text(prompt.get("few_shot_examples")),
-    }
-
-
-def _resolve_model_id(config: Config) -> str:
-    generation_model_id = config.prompt.generation_model_id
-    if generation_model_id:
-        return str(generation_model_id)
-    raise ValueError("prompt.generation_model_id missing")
-
-
-def _comment_prefix(config: Config, key: str) -> str:
-    comment_prefixes = config.markers.comment_prefixes
-    return getattr(comment_prefixes, key, comment_prefixes.ai)
-
-
-def _ai_flag(config: Config) -> str:
-    return config.markers.ai_flag
-
-
-def _llm_tagging_settings(config: Config) -> tuple[list[str], bool, str, str]:
-    llm_cfg = config.apply.tagging.llm
-    add_flags = list(llm_cfg.add_flags)
-    add_ai_flag = bool(llm_cfg.add_ai_flag)
-    comment_prefix_key = str(llm_cfg.comment_prefix_key or "ai")
-    prefix = _comment_prefix(config, comment_prefix_key)
-    ai_flag = _ai_flag(config)
-    return add_flags, add_ai_flag, ai_flag, prefix
-
-
-def _merge_unique(values: Iterable[str], extra: Iterable[str]) -> list[str]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for value in list(values) + list(extra):
-        text = str(value)
-        if text in seen:
-            continue
-        seen.add(text)
-        merged.append(text)
-    return merged
-
-
-def _apply_llm_tagging(
-    entry: MutableMapping[str, object],
-    *,
-    config: Config,
-    model_id: str,
-) -> None:
-    add_flags, add_ai_flag, ai_flag, comment_prefix = _llm_tagging_settings(config)
-    ensured_line = f"{comment_prefix} model={model_id}"
-
-    flags = entry.get("flags")
-    if isinstance(flags, Mapping):
-        add_list = list(flags.get("add", []))
-        remove_list = list(flags.get("remove", []))
-    else:
-        add_list = []
-        remove_list = []
-    extra_flags = list(add_flags)
-    if add_ai_flag:
-        extra_flags.append(ai_flag)
-    entry["flags"] = {
-        "add": _merge_unique(add_list, extra_flags),
-        "remove": remove_list,
-    }
-
-    comments = entry.get("comments")
-    if isinstance(comments, Mapping):
-        remove_prefixes = list(comments.get("remove_prefixes", []))
-        ensure_lines = list(comments.get("ensure_lines", []))
-        append = str(comments.get("append", ""))
-    else:
-        remove_prefixes = []
-        ensure_lines = []
-        append = ""
-
-    entry["comments"] = {
-        "remove_prefixes": _merge_unique(remove_prefixes, [comment_prefix]),
-        "ensure_lines": _merge_unique(ensure_lines, [ensured_line]),
-        "append": append,
     }
 
 
@@ -217,7 +137,6 @@ def batch_translate(
     if dspy.settings.lm is None:
         configure_dspy(config)
     translator = KDEAITranslator()
-    model_id = _resolve_model_id(config)
     normalized_lang = str(target_lang or "")
 
     updated: list[MutableMapping[str, object]] = []
@@ -241,7 +160,7 @@ def batch_translate(
         )
         entry["prompt"] = prompt_payload
         entry["action"] = PlanAction.LLM
-        _apply_llm_tagging(entry, config=config, model_id=model_id)
+        entry["tag_profile"] = "llm"
         updated.append(entry)
 
     return updated
@@ -251,7 +170,6 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
     if dspy.settings.lm is None:
         configure_dspy(config)
     translator = KDEAITranslator()
-    model_id = _resolve_model_id(config)
     target_lang = str(plan.get("lang", ""))
 
     files = plan.get("files")
@@ -284,6 +202,6 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
             )
             entry["prompt"] = prompt_payload
             entry["action"] = PlanAction.LLM
-            _apply_llm_tagging(entry, config=config, model_id=model_id)
+            entry["tag_profile"] = "llm"
 
     return plan

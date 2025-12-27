@@ -413,8 +413,7 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
             entry = entries[0]
             self.assertEqual(entry["action"], "llm")
             self.assertTrue(entry["translation"]["msgstr"])
-            self.assertIn("flags", entry)
-            self.assertIn("comments", entry)
+            self.assertEqual(entry["tag_profile"], "llm")
 
             plan_payload = {
                 "format": 1,

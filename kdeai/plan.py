@@ -93,7 +93,6 @@ class PlanBuilder:
             _ai_prefix,
             self.ai_flag,
         ) = po_utils.marker_settings_from_config(config)
-        self.selected_overwrite = str(overwrite or config.apply.overwrite_default)
         assets, effective_examples_mode, effective_glossary_mode = _build_assets(
             project_root=project_root,
             project_id=project_id,
@@ -111,12 +110,6 @@ class PlanBuilder:
         self.embedder = embedder
         self._debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
 
-    def _build_tm_tags_and_comments(
-        self,
-        tm_candidate: retrieve_tm.TmCandidate,
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        return _tm_tags_and_comments(self.config, tm_candidate)
-
     def close(self) -> None:
         self.assets.close()
 
@@ -133,7 +126,6 @@ class PlanBuilder:
     ) -> DraftPlan:
         entries_payload: list[dict] = []
         total_entries = 0
-        skipped_overwrite = 0
         tm_entries = 0
         llm_entries = 0
         marker_flags = po_utils.ensure_ai_flag_in_markers(self.marker_flags, self.ai_flag)
@@ -143,8 +135,6 @@ class PlanBuilder:
             if entry.obsolete or entry.msgid == "":
                 continue
             total_entries += 1
-            current_non_empty = po_utils.has_non_empty_translation(entry)
-            reviewed = po_utils.is_reviewed(entry, self.review_prefix)
             msgctxt = entry.msgctxt or ""
             msgid = entry.msgid
             msgid_plural = entry.msgid_plural or ""
@@ -154,19 +144,6 @@ class PlanBuilder:
                 marker_flags=marker_flags,
                 comment_prefixes=comment_prefixes,
             )
-            if not po_utils.can_overwrite(current_non_empty, reviewed, self.selected_overwrite):
-                skipped_overwrite += 1
-                entries_payload.append(
-                    {
-                        "msgctxt": msgctxt,
-                        "msgid": msgid,
-                        "msgid_plural": msgid_plural,
-                        "base_state_hash": base_state_hash,
-                        "action": PlanAction.SKIP,
-                        "skip_reason": "overwrite_policy",
-                    }
-                )
-                continue
             source_key = po_model.source_key_for(msgctxt, msgid, msgid_plural)
             has_plural = bool(msgid_plural)
             tm_candidate = retrieve_tm.lookup_tm_exact(
@@ -179,7 +156,6 @@ class PlanBuilder:
                 reference_conn=self.assets.reference_conn,
             )
             if tm_candidate is not None:
-                flags, comments = self._build_tm_tags_and_comments(tm_candidate)
                 entries_payload.append(
                     {
                         "msgctxt": msgctxt,
@@ -187,13 +163,12 @@ class PlanBuilder:
                         "msgid_plural": msgid_plural,
                         "base_state_hash": base_state_hash,
                         "action": PlanAction.COPY_TM,
+                        "tag_profile": "tm_copy",
                         "tm_scope": tm_candidate.scope,
                         "translation": {
                             "msgstr": tm_candidate.msgstr,
                             "msgstr_plural": tm_candidate.msgstr_plural,
                         },
-                        "flags": flags,
-                        "comments": comments,
                     }
                 )
                 tm_entries += 1
@@ -222,6 +197,7 @@ class PlanBuilder:
                     "msgid_plural": msgid_plural,
                     "base_state_hash": base_state_hash,
                     "action": PlanAction.LLM,
+                    "tag_profile": "llm",
                     "translation": {"msgstr": "", "msgstr_plural": {}},
                     "examples": kdeprompt.examples_context(examples),
                     "glossary_terms": kdeprompt.glossary_context(glossary_matches),
@@ -234,7 +210,6 @@ class PlanBuilder:
                 "[kdeai][debug] plan",
                 file_path,
                 f"total_entries={total_entries}",
-                f"skipped_overwrite={skipped_overwrite}",
                 f"tm_entries={tm_entries}",
                 f"llm_entries={llm_entries}",
                 file=sys.stderr,
@@ -342,31 +317,6 @@ _iter_po_paths = po_utils.iter_po_paths
 _normalize_relpath = po_utils.normalize_relpath
 _relpath_key = po_utils.relpath_key
 _read_json = po_utils.read_json
-
-
-def _tm_tags_and_comments(
-    config: Config,
-    tm_candidate: retrieve_tm.TmCandidate,
-) -> tuple[dict[str, object], dict[str, object]]:
-    tm_cfg = config.apply.tagging.tm_copy
-    add_flags = list(tm_cfg.add_flags)
-    add_ai_flag = bool(tm_cfg.add_ai_flag)
-    comment_prefix_key = str(tm_cfg.comment_prefix_key or "tm")
-    comment_prefixes = config.markers.comment_prefixes
-    comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.tm)
-    ai_flag = config.markers.ai_flag
-
-    if add_ai_flag:
-        add_flags.append(ai_flag)
-
-    ensured_line = f"{comment_prefix} copied_from={tm_candidate.scope}"
-    flags = {"add": add_flags, "remove": []}
-    comments = {
-        "remove_prefixes": [comment_prefix],
-        "ensure_lines": [ensured_line],
-        "append": "",
-    }
-    return flags, comments
 
 
 def _glossary_settings(config: Config) -> tuple[list[str], int, str, str]:

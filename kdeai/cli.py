@@ -347,10 +347,7 @@ def plan(
             )
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
-        apply_cfg = _apply_defaults_from_config(
-            config,
-            overwrite_default=builder.selected_overwrite,
-        )
+        apply_cfg = _apply_defaults_from_config(config)
         plan_payload = _build_plan_header(
             project=project,
             lang=lang,

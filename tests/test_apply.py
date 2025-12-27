@@ -82,6 +82,7 @@ class TestApplyStrictMode(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_hash,
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Datei", "msgstr_plural": {}},
                             }
                         ],
@@ -157,6 +158,7 @@ class TestApplyStrictMode(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_hash,
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Datei", "msgstr_plural": {}},
                             }
                         ],
@@ -210,8 +212,12 @@ class TestApplyAdditionalCases(unittest.TestCase):
         translation: dict,
         config_hash: str,
         action: str = "copy_tm",
+        tag_profile: str | None = None,
         extra: dict | None = None,
     ) -> dict:
+        resolved_tag_profile = tag_profile
+        if resolved_tag_profile is None:
+            resolved_tag_profile = "tm_copy" if action == "copy_tm" else "llm"
         plan_payload = {
             "format": 1,
             "project_id": "proj",
@@ -227,17 +233,18 @@ class TestApplyAdditionalCases(unittest.TestCase):
                     "file_path": file_path,
                     "base_sha256": base_sha256,
                     "entries": [
-                        {
-                            "msgctxt": msgctxt,
-                            "msgid": msgid,
-                            "msgid_plural": "",
-                            "base_state_hash": base_state_hash,
-                            "action": action,
-                            "translation": translation,
-                        }
-                    ],
-                }
-            ],
+                    {
+                        "msgctxt": msgctxt,
+                        "msgid": msgid,
+                        "msgid_plural": "",
+                        "base_state_hash": base_state_hash,
+                        "action": action,
+                        "tag_profile": resolved_tag_profile,
+                        "translation": translation,
+                    }
+                ],
+            }
+        ],
         }
         if extra:
             plan_payload.update(extra)
@@ -355,6 +362,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_file,
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Datei", "msgstr_plural": {}},
                             },
                             {
@@ -363,6 +371,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_edit,
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Bearbeiten", "msgstr_plural": {}},
                             },
                         ],
@@ -521,7 +530,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
         )
         self.assertEqual(entry.tcomment, expected)
 
-    def test_comment_remove_prefix_must_be_tool_prefix(self):
+    def test_plan_rejects_comments_field(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             po_path = root / "locale" / "de.po"
@@ -562,16 +571,13 @@ class TestApplyAdditionalCases(unittest.TestCase):
             )
             self.assertEqual(result.files_written, [])
             self.assertTrue(
-                any(
-                    "plan comments remove_prefixes must use tool prefixes" in error
-                    for error in result.errors
-                )
+                any("plan entries must not include comments" in error for error in result.errors)
             )
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
 
-    def test_comment_ensure_lines_must_be_tool_prefix(self):
+    def test_plan_rejects_flags_field(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             po_path = root / "locale" / "de.po"
@@ -595,10 +601,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 translation={"msgstr": "Datei", "msgstr_plural": {}},
                 config_hash=config.config_hash,
             )
-            plan_payload["files"][0]["entries"][0]["comments"] = {
-                "remove_prefixes": [],
-                "ensure_lines": ["NOT_KDEAI: hi"],
-                "append": "",
+            plan_payload["files"][0]["entries"][0]["flags"] = {
+                "add": ["fuzzy"],
+                "remove": [],
             }
 
             result = apply.apply_plan(
@@ -612,16 +617,13 @@ class TestApplyAdditionalCases(unittest.TestCase):
             )
             self.assertEqual(result.files_written, [])
             self.assertTrue(
-                any(
-                    "plan comments ensure_lines must use tool prefixes" in error
-                    for error in result.errors
-                )
+                any("plan entries must not include flags" in error for error in result.errors)
             )
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
 
-    def test_comment_remove_prefix_tool_namespace(self):
+    def test_apply_derives_tm_tag_comment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             po_path = root / "locale" / "de.po"
@@ -631,9 +633,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
             entry.tcomment = (
-                "KDEAI-AI: model=a\n"
-                "KDEAI-AI: note\n"
-                "KDEAI-AI: model=b\n"
+                "KDEAI-TM: copied_from=old\n"
                 "KDEAI: keep"
             )
             po_file.save(str(po_path))
@@ -653,11 +653,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 translation={"msgstr": "Datei", "msgstr_plural": {}},
                 config_hash=config.config_hash,
             )
-            plan_payload["files"][0]["entries"][0]["comments"] = {
-                "remove_prefixes": ["KDEAI-AI: model="],
-                "ensure_lines": [],
-                "append": "",
-            }
+            plan_payload["files"][0]["entries"][0]["tm_scope"] = "workspace"
 
             result = apply.apply_plan(
                 plan_payload,
@@ -673,10 +669,11 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(
                 updated_entry.tcomment,
-                "KDEAI-AI: note\nKDEAI: keep",
+                "KDEAI: keep\nKDEAI-TM: copied_from=workspace",
             )
+            self.assertIn("fuzzy", updated_entry.flags)
 
-    def test_comment_append_requires_newline(self):
+    def test_apply_derives_llm_tag_comment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             po_path = root / "locale" / "de.po"
@@ -685,7 +682,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
 
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            entry.tcomment = "KDEAI: old"
+            entry.tcomment = "KDEAI-AI: model=old\nKDEAI: keep"
             po_file.save(str(po_path))
 
             base_bytes = po_path.read_bytes()
@@ -702,62 +699,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 msgid="File",
                 translation={"msgstr": "Datei", "msgstr_plural": {}},
                 config_hash=config.config_hash,
+                action="llm",
+                tag_profile="llm",
             )
-            plan_payload["files"][0]["entries"][0]["comments"] = {
-                "remove_prefixes": [],
-                "ensure_lines": [],
-                "append": "KDEAI-AI: model=x",
-            }
-
-            result = apply.apply_plan(
-                plan_payload,
-                project_root=root,
-                project_id="proj",
-                path_casefold=False,
-                config=config,
-                apply_mode="strict",
-                overwrite="conservative",
-            )
-            self.assertEqual(result.files_written, [])
-            self.assertTrue(
-                any(
-                    "plan comments append must end with \\n" in error
-                    for error in result.errors
-                )
-            )
-
-    def test_comment_append_applies(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            po_path = root / "locale" / "de.po"
-            po_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_sample_po(po_path)
-
-            po_file = polib.pofile(str(po_path))
-            entry = po_file.find("File", msgctxt="menu")
-            entry.tcomment = "KDEAI: old"
-            po_file.save(str(po_path))
-
-            base_bytes = po_path.read_bytes()
-            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
-            config = build_config()
-            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
-            config = build_config()
-
-            plan_payload = self._build_plan(
-                file_path="locale/de.po",
-                base_sha256=base_sha256,
-                base_state_hash=base_state_hash,
-                msgctxt="menu",
-                msgid="File",
-                translation={"msgstr": "Datei", "msgstr_plural": {}},
-                config_hash=config.config_hash,
-            )
-            plan_payload["files"][0]["entries"][0]["comments"] = {
-                "remove_prefixes": [],
-                "ensure_lines": [],
-                "append": "KDEAI-AI: model=x\n",
-            }
 
             result = apply.apply_plan(
                 plan_payload,
@@ -773,8 +717,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(
                 updated_entry.tcomment,
-                "KDEAI: old\nKDEAI-AI: model=x\n",
+                "KDEAI: keep\nKDEAI-AI: model=test-generation-model",
             )
+            self.assertIn("fuzzy", updated_entry.flags)
 
     def test_apply_comments_preserves_trailing_newline(self):
         entry = polib.POEntry(msgid="File", msgstr="")
@@ -821,6 +766,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                     "msgid_plural": "",
                     "base_state_hash": base_state_hash_edit + "-mismatch",
                     "action": "copy_tm",
+                    "tag_profile": "tm_copy",
                     "translation": {"msgstr": "Bearbeiten", "msgstr_plural": {}},
                 }
             )
@@ -877,6 +823,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                     "msgid_plural": "",
                     "base_state_hash": base_state_hash_edit,
                     "action": "copy_tm",
+                    "tag_profile": "tm_copy",
                     "translation": {"msgstr": "Bearbeiten", "msgstr_plural": {}},
                 }
             )
@@ -959,6 +906,59 @@ class TestApplyAdditionalCases(unittest.TestCase):
                     else:
                         self.assertEqual(result.files_written, [])
                         self.assertEqual(updated_entry.msgstr, current_msgstr)
+
+    def test_overwrite_policy_changes_without_replan(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            entry.msgstr = "Alt"
+            po_file.save(str(po_path))
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Neu", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            result_blocked = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            result_allowed = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="allow-nonempty",
+            )
+
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(result_blocked.files_written, [])
+            self.assertEqual(result_allowed.files_written, ["locale/de.po"])
+            self.assertEqual(updated_entry.msgstr, "Neu")
 
     def test_validator_gate_blocks_write(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1239,6 +1239,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 config_hash=config.config_hash,
             )
             plan_payload["files"][0]["entries"][0]["action"] = "llm"
+            plan_payload["files"][0]["entries"][0]["tag_profile"] = "llm"
 
             result = apply.apply_plan(
                 plan_payload,
@@ -1287,6 +1288,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_hash,
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Datei", "msgstr_plural": {}},
                             },
                             {
@@ -1295,6 +1297,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": "missing",
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Fehlt", "msgstr_plural": {}},
                             },
                         ],
@@ -1351,6 +1354,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_hash,
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Datei", "msgstr_plural": {}},
                             },
                             {
@@ -1359,6 +1363,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": "missing",
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Fehlt", "msgstr_plural": {}},
                             },
                         ],
@@ -1626,6 +1631,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_hash,
                                 "action": "llm",
+                                "tag_profile": "llm",
                             }
                         ],
                     }
@@ -1691,6 +1697,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": "missing",
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                             },
                         ],
                     }
@@ -2030,6 +2037,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                                 "msgid_plural": "",
                                 "base_state_hash": base_state_hash,
                                 "action": "copy_tm",
+                                "tag_profile": "tm_copy",
                                 "translation": {"msgstr": "Datei", "msgstr_plural": {}},
                             }
                         ],

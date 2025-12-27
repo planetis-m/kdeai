@@ -239,15 +239,15 @@ def _set_translation(
     entry.msgstr_plural = kdestate.canonical_plural_map(msgstr_plural)
 
 
-def _default_flags_and_comments_for_action(
-    action: str,
+def _derive_tag_patch(
+    tag_profile: str,
     *,
     config: Config,
     tm_scope: str | None = None,
     model_id: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     markers = config.markers
-    if action == PlanAction.COPY_TM:
+    if tag_profile == "tm_copy":
         tm_cfg = config.apply.tagging.tm_copy
         add_flags = list(tm_cfg.add_flags)
         if tm_cfg.add_ai_flag:
@@ -264,7 +264,7 @@ def _default_flags_and_comments_for_action(
             "append": "",
         }
         return flags, comments
-    if action == PlanAction.LLM:
+    if tag_profile == "llm":
         llm_cfg = config.apply.tagging.llm
         add_flags = list(llm_cfg.add_flags)
         if llm_cfg.add_ai_flag:
@@ -282,37 +282,6 @@ def _default_flags_and_comments_for_action(
         }
         return flags, comments
     return {"add": [], "remove": []}, {"remove_prefixes": [], "ensure_lines": [], "append": ""}
-
-
-def _flags_patch_is_valid(obj: object) -> bool:
-    if not isinstance(obj, Mapping):
-        return False
-    add = obj.get("add")
-    remove = obj.get("remove")
-    if not isinstance(add, (list, tuple)) or not isinstance(remove, (list, tuple)):
-        return False
-    return all(isinstance(item, str) for item in add) and all(
-        isinstance(item, str) for item in remove
-    )
-
-
-def _comments_patch_is_valid(obj: object) -> bool:
-    if not isinstance(obj, Mapping):
-        return False
-    remove_prefixes = obj.get("remove_prefixes")
-    ensure_lines = obj.get("ensure_lines")
-    append = obj.get("append")
-    if not isinstance(remove_prefixes, (list, tuple)) or not all(
-        isinstance(item, str) for item in remove_prefixes
-    ):
-        return False
-    if not isinstance(ensure_lines, (list, tuple)) or not all(
-        isinstance(item, str) for item in ensure_lines
-    ):
-        return False
-    if not isinstance(append, str):
-        return False
-    return append == "" or append.endswith("\n")
 
 
 def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
@@ -370,11 +339,7 @@ def _update_session_tm(
         }
 
 
-def _is_tool_owned_prefix(prefix: str, *, tool_prefixes: Iterable[str]) -> bool:
-    return any(prefix.startswith(tool_prefix) for tool_prefix in tool_prefixes)
-
-
-def _validate_plan_entry(entry_item: object, *, tool_prefixes: list[str]) -> list[str]:
+def _validate_plan_entry(entry_item: object) -> list[str]:
     if not isinstance(entry_item, Mapping):
         return ["plan entry must be an object"]
     errors: list[str] = []
@@ -398,51 +363,17 @@ def _validate_plan_entry(entry_item: object, *, tool_prefixes: list[str]) -> lis
                 errors.append("translation.msgstr must be a string")
             if not isinstance(translation.get("msgstr_plural"), Mapping):
                 errors.append("translation.msgstr_plural must be an object")
-    flags = entry_item.get("flags")
-    if flags is not None:
-        if not isinstance(flags, Mapping):
-            errors.append("flags must be an object when provided")
+        tag_profile = entry_item.get("tag_profile")
+        if not isinstance(tag_profile, str):
+            errors.append("tag_profile must be a string for copy_tm/llm")
         else:
-            add_flags = flags.get("add", [])
-            remove_flags = flags.get("remove", [])
-            if not isinstance(add_flags, (list, tuple)):
-                errors.append("flags.add must be a list")
-            elif any(not isinstance(flag, str) for flag in add_flags):
-                errors.append("flags.add must be a list of strings")
-            if not isinstance(remove_flags, (list, tuple)):
-                errors.append("flags.remove must be a list")
-            elif any(not isinstance(flag, str) for flag in remove_flags):
-                errors.append("flags.remove must be a list of strings")
-    comments = entry_item.get("comments")
-    if comments is not None:
-        if not isinstance(comments, Mapping):
-            errors.append("comments must be an object when provided")
-        else:
-            remove_prefixes = comments.get("remove_prefixes", [])
-            ensure_lines = comments.get("ensure_lines", [])
-            append = comments.get("append", "")
-            if not isinstance(remove_prefixes, (list, tuple)):
-                errors.append("plan comments remove_prefixes must be a list")
-            elif any(not isinstance(prefix, str) for prefix in remove_prefixes):
-                errors.append("plan comments remove_prefixes must be a list of strings")
-            elif any(
-                not _is_tool_owned_prefix(prefix, tool_prefixes=tool_prefixes)
-                for prefix in remove_prefixes
-            ):
-                errors.append("plan comments remove_prefixes must use tool prefixes")
-            if not isinstance(ensure_lines, (list, tuple)):
-                errors.append("plan comments ensure_lines must be a list")
-            elif any(not isinstance(line, str) for line in ensure_lines):
-                errors.append("plan comments ensure_lines must be a list of strings")
-            elif any(
-                not any(line.startswith(prefix) for prefix in tool_prefixes)
-                for line in ensure_lines
-            ):
-                errors.append("plan comments ensure_lines must use tool prefixes")
-            if not isinstance(append, str):
-                errors.append("plan comments append must be a string")
-            elif append != "" and not append.endswith("\n"):
-                errors.append("plan comments append must end with \\n")
+            expected_profile = "tm_copy" if action == PlanAction.COPY_TM else "llm"
+            if tag_profile != expected_profile:
+                errors.append(f"tag_profile must be {expected_profile!r} for {action}")
+    if "flags" in entry_item:
+        errors.append("plan entries must not include flags")
+    if "comments" in entry_item:
+        errors.append("plan entries must not include comments")
     return errors
 
 
@@ -457,7 +388,6 @@ def apply_plan_to_file(
     lock_path: Path,
     base_sha256: str,
 ) -> ApplyFileResult:
-    tool_prefixes = [str(prefix) for prefix in ctx.comment_prefixes]
     marker_flags = list(ctx.marker_flags)
     comment_prefixes = list(ctx.comment_prefixes)
 
@@ -490,7 +420,7 @@ def apply_plan_to_file(
     mismatch = False
     mismatch_reason: str | None = None
     for index, entry_item in enumerate(plan_items):
-        entry_errors = _validate_plan_entry(entry_item, tool_prefixes=tool_prefixes)
+        entry_errors = _validate_plan_entry(entry_item)
         if entry_errors:
             for error in entry_errors:
                 file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
@@ -573,37 +503,26 @@ def apply_plan_to_file(
         msgstr_plural = translation.get("msgstr_plural", {})
         _set_translation(entry, msgstr=msgstr, msgstr_plural=msgstr_plural)
 
-        flags = entry_item.get("flags")
-        comments = entry_item.get("comments")
-        flags_ok = _flags_patch_is_valid(flags)
-        comments_ok = _comments_patch_is_valid(comments)
-        if not flags_ok or not comments_ok:
-            tm_scope = entry_item.get("tm_scope") if action == PlanAction.COPY_TM else None
-            if tm_scope not in {"session", "workspace", "reference"}:
-                tm_scope = "unknown"
-            default_flags, default_comments = _default_flags_and_comments_for_action(
-                action,
-                config=config,
-                tm_scope=str(tm_scope) if tm_scope is not None else None,
-                model_id=model_id,
-            )
-            if not flags_ok:
-                flags = default_flags
-            if not comments_ok:
-                comments = default_comments
+        tag_profile = str(entry_item.get("tag_profile", ""))
+        tm_scope = entry_item.get("tm_scope") if action == PlanAction.COPY_TM else None
+        if tm_scope not in {"session", "workspace", "reference"}:
+            tm_scope = "unknown"
+        flags, comments = _derive_tag_patch(
+            tag_profile,
+            config=config,
+            tm_scope=str(tm_scope) if tm_scope is not None else None,
+            model_id=model_id,
+        )
+        add_flags = flags.get("add", [])
+        remove_flags = flags.get("remove", [])
+        _apply_flags(entry, add_flags, remove_flags)
 
-        if flags is not None:
-            add_flags = flags.get("add", [])
-            remove_flags = flags.get("remove", [])
-            _apply_flags(entry, add_flags, remove_flags)
-
-        if comments is not None:
-            remove_prefixes = comments.get("remove_prefixes", [])
-            ensure_lines = comments.get("ensure_lines", [])
-            append = str(comments.get("append", ""))
-            normalized_remove = [str(prefix) for prefix in remove_prefixes]
-            normalized_ensure = [str(line) for line in ensure_lines]
-            _apply_comments(entry, normalized_remove, normalized_ensure, append)
+        remove_prefixes = comments.get("remove_prefixes", [])
+        ensure_lines = comments.get("ensure_lines", [])
+        append = str(comments.get("append", ""))
+        normalized_remove = [str(prefix) for prefix in remove_prefixes]
+        normalized_ensure = [str(line) for line in ensure_lines]
+        _apply_comments(entry, normalized_remove, normalized_ensure, append)
 
         applied_in_file += 1
         applied_entries.append(entry)

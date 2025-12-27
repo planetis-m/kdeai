@@ -96,12 +96,6 @@ def test_batch_translate_plan_updates_needs_llm_entries() -> None:
                                 "glossary_context": "",
                                 "few_shot_examples": "",
                             },
-                            "flags": {"add": ["keep"], "remove": ["old"]},
-                            "comments": {
-                                "remove_prefixes": ["KDEAI:"],
-                                "ensure_lines": ["KDEAI-AI: model=old"],
-                                "append": "",
-                            },
                         },
                         {
                             "msgctxt": "",
@@ -166,12 +160,8 @@ def test_batch_translate_plan_updates_needs_llm_entries() -> None:
     assert plural["translation"]["msgstr_plural"]["1"].strip()
     assert "translation" not in skipped
 
-    assert "fuzzy" in singular["flags"]["add"]
-    assert "kdeai-ai" in singular["flags"]["add"]
-    assert "keep" in singular["flags"]["add"]
-    assert singular["flags"]["remove"] == ["old"]
-    assert "KDEAI-AI:" in singular["comments"]["remove_prefixes"]
-    assert "KDEAI-AI: model=openrouter/x-ai/grok-4-fast" in singular["comments"]["ensure_lines"]
+    assert singular["tag_profile"] == "llm"
+    assert plural["tag_profile"] == "llm"
 
 
 def test_batch_translate_plan_adds_prompt_and_tags_for_needs_llm() -> None:
@@ -234,5 +224,4 @@ def test_batch_translate_plan_adds_prompt_and_tags_for_needs_llm() -> None:
     assert entry["action"] == "llm"
     assert entry["translation"]["msgstr"].strip()
     assert entry["translation"]["msgstr_plural"] == {}
-    assert entry["flags"]["add"]
-    assert entry["comments"]["ensure_lines"]
+    assert entry["tag_profile"] == "llm"
