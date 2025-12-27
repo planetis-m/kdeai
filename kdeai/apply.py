@@ -20,14 +20,14 @@ from kdeai.config import Config
 from kdeai import snapshot
 from kdeai import validate
 from kdeai import workspace_tm
-from kdeai.constants import PlanAction, ReviewStatus
+from kdeai.constants import ApplyMode, OverwritePolicy, PlanAction, PostIndex, ReviewStatus, TmScope
 from kdeai.tm_types import SessionTm
 
 ALLOWED_OVERWRITE_POLICIES = {
-    "conservative",
-    "allow-nonempty",
-    "allow-reviewed",
-    "all",
+    OverwritePolicy.CONSERVATIVE,
+    OverwritePolicy.ALLOW_NONEMPTY,
+    OverwritePolicy.ALLOW_REVIEWED,
+    OverwritePolicy.ALL,
 }
 
 
@@ -505,7 +505,7 @@ def apply_plan_to_file(
 
         tag_profile = str(entry_item.get("tag_profile", ""))
         tm_scope = entry_item.get("tm_scope") if action == PlanAction.COPY_TM else None
-        if tm_scope not in {"session", "workspace", "reference"}:
+        if tm_scope not in {TmScope.SESSION, TmScope.WORKSPACE, TmScope.REFERENCE}:
             tm_scope = "unknown"
         flags, comments = _derive_tag_patch(
             tag_profile,
@@ -586,11 +586,13 @@ def apply_plan(
     defaults = plan.get("apply_defaults") if isinstance(plan, Mapping) else None
     defaults = defaults if isinstance(defaults, Mapping) else {}
 
-    selected_mode = str(apply_mode or defaults.get("apply_mode") or defaults.get("mode") or "strict")
-    selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
+    selected_mode = str(
+        apply_mode or defaults.get("apply_mode") or defaults.get("mode") or ApplyMode.STRICT
+    )
+    selected_overwrite = str(overwrite or defaults.get("overwrite") or OverwritePolicy.CONSERVATIVE)
     if post_index is None:
-        post_index_setting = str(defaults.get("post_index") or "off")
-        effective_post_index = post_index_setting == "on"
+        post_index_setting = str(defaults.get("post_index") or PostIndex.OFF)
+        effective_post_index = post_index_setting == PostIndex.ON
     else:
         effective_post_index = bool(post_index)
     post_index_flag = effective_post_index and isinstance(workspace_conn, sqlite3.Connection)
@@ -626,7 +628,7 @@ def apply_plan(
     errors = []
     if str(plan_format) != "1":
         errors.append("unsupported plan format")
-    if selected_mode not in {"strict", "rebase"}:
+    if selected_mode not in {ApplyMode.STRICT, ApplyMode.REBASE}:
         errors.append(f"unsupported apply mode: {selected_mode}")
     if not lang.strip():
         errors.append("plan lang missing")

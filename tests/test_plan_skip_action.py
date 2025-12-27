@@ -27,14 +27,17 @@ class TestPlanSkipAction(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            options = plan.PlannerOptions(
+                cache="off",
+                examples_mode="off",
+                glossary_mode="off",
+            )
             builder = plan.PlanBuilder(
                 project_root=Path(tmpdir),
                 project_id="proj",
                 config=config,
                 lang="de",
-                cache="off",
-                examples_mode="off",
-                glossary_mode="off",
+                options=options,
             )
             try:
                 draft = builder.build_draft("locale/de.po", [entry])

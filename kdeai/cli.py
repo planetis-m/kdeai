@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Optional, Literal, NoReturn
+from typing import Optional, NoReturn, Literal
 import os
 from datetime import datetime, timezone
 
@@ -30,12 +30,14 @@ from kdeai import reference as kderef
 from kdeai import snapshot
 from kdeai import workspace_tm
 from kdeai.constants import (
-    ApplyMode,
-    AssetMode,
+    ApplyModeLiteral,
+    AssetModeLiteral,
     CacheMode,
+    CacheModeLiteral,
     DbKind,
-    OverwritePolicy,
+    OverwritePolicyLiteral,
     PostIndex,
+    PostIndexLiteral,
     TmScope,
     WORKSPACE_TM_SCHEMA_VERSION,
 )
@@ -56,22 +58,19 @@ app.add_typer(reference_app, name="reference")
 app.add_typer(examples_app, name="examples")
 app.add_typer(glossary_app, name="glossary")
 
-OnOff = Literal[PostIndex.ON, PostIndex.OFF]
-CacheModeLiteral = Literal[CacheMode.OFF, CacheMode.ON]
-ExamplesMode = Literal[AssetMode.OFF, AssetMode.AUTO, AssetMode.REQUIRED]
-GlossaryMode = Literal[AssetMode.OFF, AssetMode.AUTO, AssetMode.REQUIRED]
-ApplyModeLiteral = Literal[ApplyMode.STRICT, ApplyMode.REBASE]
-OverwriteModeLiteral = Literal[
-    OverwritePolicy.CONSERVATIVE,
-    OverwritePolicy.ALLOW_NONEMPTY,
-    OverwritePolicy.ALLOW_REVIEWED,
-    OverwritePolicy.ALL,
-]
+OnOff = CacheModeLiteral
+ExamplesMode = AssetModeLiteral
+GlossaryMode = AssetModeLiteral
+OverwriteModeLiteral = OverwritePolicyLiteral
 ExamplesScope = Literal["workspace", "reference"]
 
 
 def _project_dir(project_root: Path) -> Path:
     return project_root / ".kdeai"
+
+
+def _cache_path(project_root: Path, *parts: str) -> Path:
+    return project_root / ".kdeai" / "cache" / Path(*parts)
 
 
 _read_json = po_utils.read_json
@@ -82,6 +81,41 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(kdehash.canonical_json(payload), encoding="utf-8")
     os.replace(tmp_path, path)
+
+
+def _glossary_is_current(
+    *,
+    pointer_path: Path,
+    reference_snapshot_id: int,
+    output_path: Path,
+    project_id: str,
+    config: Config,
+) -> bool:
+    """Check whether the glossary cache is already current."""
+    if not pointer_path.exists():
+        return False
+    try:
+        pointer = _read_json(pointer_path, pointer_path.name)
+        db_file = str(pointer.get("db_file", ""))
+        pointer_snapshot_id = int(pointer.get("snapshot_id", 0))
+        db_path = pointer_path.parent / db_file
+        if (
+            pointer_snapshot_id == reference_snapshot_id
+            and db_file == output_path.name
+            and db_path.exists()
+        ):
+            with closing(kdedb.connect_readonly(db_path)) as conn:
+                kdedb.validate_meta_table(
+                    conn,
+                    expected_project_id=project_id,
+                    expected_config_hash=config.config_hash,
+                    expected_kind=DbKind.GLOSSARY,
+                    expected_normalization_id=glossary_normalization_id(config),
+                )
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def _acquire_run_lock(project_root: Path, ctx: typer.Context) -> None:
@@ -170,7 +204,7 @@ def _ensure_workspace_db(
     config_hash: str,
     config: Config,
 ):
-    db_path = project_root / ".kdeai" / "cache" / "workspace.tm.sqlite"
+    db_path = _cache_path(project_root, "workspace.tm.sqlite")
     created = not db_path.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     busy_timeout_ms, synchronous = workspace_tm_settings(config)
@@ -236,28 +270,6 @@ def _optional_workspace_db(
             conn.close()
 
 
-@contextmanager
-def _open_examples_db(
-    path: Path,
-    *,
-    project_id: str,
-    config_hash: str,
-    embed_policy_hash: str,
-    sqlite_vector_path: str | None,
-):
-    db = kdeexamples.open_examples_db(
-        path,
-        project_id=project_id,
-        config_hash=config_hash,
-        embed_policy_hash=embed_policy_hash,
-        sqlite_vector_path=sqlite_vector_path,
-    )
-    try:
-        yield db
-    finally:
-        db.conn.close()
-
-
 @app.callback()
 def main(ctx: typer.Context) -> None:
     project_root = Path.cwd()
@@ -288,6 +300,7 @@ def plan(
     project_root = _project_root(ctx)
     project = _load_project(project_root, "Plan")
     config = project.config
+    project_id = str(project.project_data["project_id"])
     cache_mode = cache or CacheMode.ON
     cache_write_flag = cache_write or CacheMode.ON
     if cache_write_flag == CacheMode.OFF:
@@ -307,22 +320,25 @@ def plan(
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     files_payload: list[dict] = []
     plan_payload: dict | None = None
-    with kdeplan.PlanBuilder(
-        project_root=project_root,
-        project_id=str(project.project_data["project_id"]),
-        config=config,
-        lang=lang,
+    options = kdeplan.PlannerOptions(
         cache=cache_mode,
-        session_tm={},
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
+    )
+    with kdeplan.PlanBuilder(
+        project_root=project_root,
+        project_id=project_id,
+        config=config,
+        lang=lang,
+        options=options,
+        session_tm={},
     ) as builder:
         for path in _iter_po_paths(project_root, paths):
             file_draft = kdeplan.generate_plan_for_file(
                 project_root=project_root,
-                project_id=str(project.project_data["project_id"]),
+                project_id=project_id,
                 path=path,
                 path_casefold=path_casefold,
                 builder=builder,
@@ -331,7 +347,7 @@ def plan(
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
         apply_cfg = _apply_defaults_from_config(config)
         plan_payload = kdeplan.build_plan_header(
-            project_id=str(project.project_data["project_id"]),
+            project_id=project_id,
             config=config,
             lang=lang,
             builder=builder,
@@ -415,6 +431,7 @@ def translate(
     project_root = _project_root(ctx)
     project = _load_project(project_root, "Translate")
     config = project.config
+    project_id = str(project.project_data["project_id"])
     cache_mode = cache or CacheMode.ON
     cache_write_flag = cache_write or CacheMode.ON
     if cache_write_flag == CacheMode.OFF:
@@ -431,7 +448,6 @@ def translate(
         )
     except ValueError as exc:
         _exit_with_error(str(exc))
-    project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(
@@ -444,21 +460,24 @@ def translate(
     total_entries_applied = 0
     files_written: list[str] = []
     files_skipped: list[str] = []
-    with kdeplan.PlanBuilder(
-        project_root=project_root,
-        project_id=str(project.project_data["project_id"]),
-        config=config,
-        lang=lang,
+    options = kdeplan.PlannerOptions(
         cache=cache_mode,
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
-        session_tm={},
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
+    )
+    with kdeplan.PlanBuilder(
+        project_root=project_root,
+        project_id=project_id,
+        config=config,
+        lang=lang,
+        options=options,
+        session_tm={},
     ) as builder:
         session_tm = builder.session_tm
         plan_header = kdeplan.build_plan_header(
-            project_id=str(project.project_data["project_id"]),
+            project_id=project_id,
             config=config,
             lang=lang,
             builder=builder,
@@ -467,7 +486,7 @@ def translate(
         for path in _iter_po_paths(project_root, paths):
             file_plan = kdeplan.generate_plan_for_file(
                 project_root=project_root,
-                project_id=str(project.project_data["project_id"]),
+                project_id=project_id,
                 path=path,
                 path_casefold=path_casefold,
                 builder=builder,
@@ -579,10 +598,11 @@ def reference_build(
     project_root = _project_root(ctx)
     project = _load_project(project_root, "Reference build")
     config = project.config
+    project_id = str(project.project_data["project_id"])
     try:
         snapshot = kderef.build_reference_snapshot(
             project_root,
-            project_id=str(project.project_data["project_id"]),
+            project_id=project_id,
             path_casefold=bool(project.project_data.get("path_casefold")),
             config=config,
             config_hash=config.config_hash,
@@ -592,11 +612,7 @@ def reference_build(
     except Exception as exc:
         _exit_with_error(f"Reference build failed: {exc}")
     pointer_path = (
-        project_root
-        / ".kdeai"
-        / "cache"
-        / "reference"
-        / "reference.current.json"
+        _cache_path(project_root, "reference", "reference.current.json")
     )
     pointer_payload = {
         "snapshot_id": snapshot.snapshot_id,
@@ -617,6 +633,7 @@ def examples_build(
     project_root = _project_root(ctx)
     project = _load_project(project_root, "Examples build")
     config = project.config
+    project_id = str(project.project_data["project_id"])
 
     if lang == "all":
         targets = config.languages.targets
@@ -633,13 +650,11 @@ def examples_build(
         )
 
     for target_lang in languages:
-        pointer_path = (
-            project_root
-            / ".kdeai"
-            / "cache"
-            / "examples"
-            / from_scope
-            / f"examples.{from_scope}.{target_lang}.current.json"
+        pointer_path = _cache_path(
+            project_root,
+            "examples",
+            from_scope,
+            f"examples.{from_scope}.{target_lang}.current.json",
         )
         if skip_if_current and pointer_path.exists():
             try:
@@ -649,7 +664,7 @@ def examples_build(
                 if db_path.exists():
                     db = kdeexamples.open_examples_db(
                         db_path,
-                        project_id=str(project.project_data["project_id"]),
+                        project_id=project_id,
                         config_hash=config.config_hash,
                         embed_policy_hash=config.embed_policy_hash,
                         sqlite_vector_path=sqlite_vector_path,
@@ -664,9 +679,7 @@ def examples_build(
             embedder = kdeplan.require_embedder(examples_embed_policy(config))
         except Exception as exc:
             _exit_with_error(str(exc))
-        output_dir = (
-            project_root / ".kdeai" / "cache" / "examples" / from_scope
-        )
+        output_dir = _cache_path(project_root, "examples", from_scope)
         ex_id = _next_pointer_id(pointer_path, "ex_id")
         output_path = output_dir / f"examples.{from_scope}.{target_lang}.{ex_id}.sqlite"
 
@@ -674,7 +687,7 @@ def examples_build(
             with closing(
                 _ensure_workspace_db(
                     project_root,
-                    project_id=str(project.project_data["project_id"]),
+                    project_id=project_id,
                     config_hash=config.config_hash,
                     config=config,
                 )
@@ -684,7 +697,7 @@ def examples_build(
                     output_path=output_path,
                     lang=target_lang,
                     config=config,
-                    project_id=str(project.project_data["project_id"]),
+                    project_id=project_id,
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
                     embedder=embedder,
@@ -693,24 +706,18 @@ def examples_build(
             source_snapshot = {"kind": DbKind.WORKSPACE_TM, "snapshot_id": 0}
         else:
             pointer = _read_json(
-                project_root
-                / ".kdeai"
-                / "cache"
-                / "reference"
-                / "reference.current.json",
+                _cache_path(project_root, "reference", "reference.current.json"),
                 "reference.current.json",
             )
             db_file = str(pointer.get("db_file", ""))
-            db_path = (
-                project_root / ".kdeai" / "cache" / "reference" / db_file
-            )
+            db_path = _cache_path(project_root, "reference", db_file)
             with closing(kdedb.connect_readonly(db_path)) as reference_conn:
                 kdeexamples.build_examples_db_from_reference(
                     reference_conn,
                     output_path=output_path,
                     lang=target_lang,
                     config=config,
-                    project_id=str(project.project_data["project_id"]),
+                    project_id=project_id,
                     config_hash=config.config_hash,
                     embed_policy_hash=config.embed_policy_hash,
                     embedder=embedder,
@@ -722,14 +729,17 @@ def examples_build(
             }
 
         try:
-            with _open_examples_db(
+            meta_db = kdeexamples.open_examples_db(
                 output_path,
-                project_id=str(project.project_data["project_id"]),
+                project_id=project_id,
                 config_hash=config.config_hash,
                 embed_policy_hash=config.embed_policy_hash,
                 sqlite_vector_path=sqlite_vector_path,
-            ) as meta_db:
+            )
+            try:
                 meta = dict(meta_db.meta)
+            finally:
+                meta_db.conn.close()
         except Exception as exc:
             _exit_with_error(f"Examples build failed: {exc}")
         created_at = meta.get("created_at") or datetime.now(timezone.utc).isoformat()
@@ -760,53 +770,34 @@ def glossary_build(
     project_root = _project_root(ctx)
     project = _load_project(project_root, "Glossary build")
     config = project.config
-    pointer_path = (
-        project_root / ".kdeai" / "cache" / "glossary" / "glossary.current.json"
-    )
+    project_id = str(project.project_data["project_id"])
+    pointer_path = _cache_path(project_root, "glossary", "glossary.current.json")
 
     ref_pointer = _read_json(
-        project_root
-        / ".kdeai"
-        / "cache"
-        / "reference"
-        / "reference.current.json",
+        _cache_path(project_root, "reference", "reference.current.json"),
         "reference.current.json",
     )
     reference_snapshot_id = int(ref_pointer.get("snapshot_id", 0))
     reference_db_file = str(ref_pointer.get("db_file", ""))
-    db_path = project_root / ".kdeai" / "cache" / "reference" / reference_db_file
+    db_path = _cache_path(project_root, "reference", reference_db_file)
     try:
         with closing(kdedb.connect_readonly(db_path)) as reference_conn:
             output_path = (
-                project_root
-                / ".kdeai"
-                / "cache"
-                / "glossary"
-                / f"glossary.{reference_snapshot_id}.sqlite"
+                _cache_path(
+                    project_root,
+                    "glossary",
+                    f"glossary.{reference_snapshot_id}.sqlite",
+                )
             )
-            if skip_if_current and pointer_path.exists():
-                try:
-                    pointer = _read_json(pointer_path, pointer_path.name)
-                    db_file = str(pointer.get("db_file", ""))
-                    pointer_snapshot_id = int(pointer.get("snapshot_id", 0))
-                    db_path = pointer_path.parent / db_file
-                    if (
-                        pointer_snapshot_id == reference_snapshot_id
-                        and db_file == output_path.name
-                        and db_path.exists()
-                    ):
-                        with closing(kdedb.connect_readonly(db_path)) as conn:
-                            kdedb.validate_meta_table(
-                                conn,
-                                expected_project_id=str(project.project_data["project_id"]),
-                                expected_config_hash=config.config_hash,
-                                expected_kind=DbKind.GLOSSARY,
-                                expected_normalization_id=glossary_normalization_id(config),
-                            )
-                        typer.echo("Glossary cache already current.")
-                        return
-                except Exception:
-                    pass
+            if skip_if_current and _glossary_is_current(
+                pointer_path=pointer_path,
+                reference_snapshot_id=reference_snapshot_id,
+                output_path=output_path,
+                project_id=project_id,
+                config=config,
+            ):
+                typer.echo("Glossary cache already current.")
+                return
             if output_path.exists():
                 _exit_with_error(
                     "Glossary DB already exists for reference snapshot "
@@ -816,14 +807,14 @@ def glossary_build(
                 reference_conn,
                 output_path=output_path,
                 config=config,
-                project_id=str(project.project_data["project_id"]),
+                project_id=project_id,
                 config_hash=config.config_hash,
             )
 
         with closing(kdedb.connect_readonly(output_path)) as conn:
             kdedb.validate_meta_table(
                 conn,
-                expected_project_id=str(project.project_data["project_id"]),
+                expected_project_id=project_id,
                 expected_config_hash=config.config_hash,
                 expected_kind=DbKind.GLOSSARY,
                 expected_normalization_id=glossary_normalization_id(config),
@@ -873,10 +864,11 @@ def gc(
     project_root = _project_root(ctx)
     project = _load_project(project_root, "GC")
     config = project.config
+    project_id = str(project.project_data["project_id"])
     try:
         report = kdegc.gc_workspace_tm(
             project_root,
-            project_id=str(project.project_data["project_id"]),
+            project_id=project_id,
             config_hash=config.config_hash,
             config=config,
             ttl_days=ttl_days,

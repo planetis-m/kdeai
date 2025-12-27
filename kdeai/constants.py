@@ -1,5 +1,7 @@
 """String constants used across KDEAI modules."""
 
+from typing import Literal
+
 
 class DbKind:
     """Database kind identifiers for meta validation."""
@@ -71,6 +73,18 @@ class PostIndex:
 
     ON = "on"
     OFF = "off"
+
+
+CacheModeLiteral = Literal[CacheMode.ON, CacheMode.OFF]
+AssetModeLiteral = Literal[AssetMode.OFF, AssetMode.AUTO, AssetMode.REQUIRED]
+ApplyModeLiteral = Literal[ApplyMode.STRICT, ApplyMode.REBASE]
+OverwritePolicyLiteral = Literal[
+    OverwritePolicy.CONSERVATIVE,
+    OverwritePolicy.ALLOW_NONEMPTY,
+    OverwritePolicy.ALLOW_REVIEWED,
+    OverwritePolicy.ALL,
+]
+PostIndexLiteral = Literal[PostIndex.ON, PostIndex.OFF]
 
 
 # Schema versions

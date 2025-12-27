@@ -194,16 +194,19 @@ class TestPlanBuilderBuildDraft(unittest.TestCase):
     def test_build_draft_auto_examples_without_sqlite_vector(self):
         config = build_config()
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = kdeplan.PlanBuilder(
-                project_root=Path(tmpdir),
-                project_id="proj",
-                config=config,
-                lang="de",
+            options = kdeplan.PlannerOptions(
                 cache="on",
                 examples_mode="auto",
                 glossary_mode="off",
                 embedder=None,
                 sqlite_vector_path=None,
+            )
+            builder = kdeplan.PlanBuilder(
+                project_root=Path(tmpdir),
+                project_id="proj",
+                config=config,
+                lang="de",
+                options=options,
             )
             try:
                 plan = builder.build_draft("file.po", [self._entry()])
@@ -221,16 +224,19 @@ class TestPlanBuilderBuildDraft(unittest.TestCase):
             return [[0.0]]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = kdeplan.PlanBuilder(
-                project_root=Path(tmpdir),
-                project_id="proj",
-                config=config,
-                lang="de",
+            options = kdeplan.PlannerOptions(
                 cache="on",
                 examples_mode="auto",
                 glossary_mode="off",
                 embedder=embedder,
                 sqlite_vector_path=None,
+            )
+            builder = kdeplan.PlanBuilder(
+                project_root=Path(tmpdir),
+                project_id="proj",
+                config=config,
+                lang="de",
+                options=options,
             )
             try:
                 plan = builder.build_draft("file.po", [self._entry()])
@@ -250,11 +256,13 @@ class TestPlanBuilderBuildDraft(unittest.TestCase):
                     project_id="proj",
                     config=config,
                     lang="de",
-                    cache="on",
-                    examples_mode="required",
-                    glossary_mode="off",
-                    embedder=lambda texts: [[0.0] for _ in texts],
-                    sqlite_vector_path=None,
+                    options=kdeplan.PlannerOptions(
+                        cache="on",
+                        examples_mode="required",
+                        glossary_mode="off",
+                        embedder=lambda texts: [[0.0] for _ in texts],
+                        sqlite_vector_path=None,
+                    ),
                 )
 
     def test_build_draft_required_examples_query_failure(self):
@@ -273,11 +281,13 @@ class TestPlanBuilderBuildDraft(unittest.TestCase):
                         project_id="proj",
                         config=config,
                         lang="de",
-                        cache="on",
-                        examples_mode="required",
-                        glossary_mode="off",
-                        embedder=lambda texts: [[0.0] for _ in texts],
-                        sqlite_vector_path="vector.so",
+                        options=kdeplan.PlannerOptions(
+                            cache="on",
+                            examples_mode="required",
+                            glossary_mode="off",
+                            embedder=lambda texts: [[0.0] for _ in texts],
+                            sqlite_vector_path="vector.so",
+                        ),
                     )
                     try:
                         with self.assertRaises(RuntimeError):
@@ -379,11 +389,13 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
                 project_id="proj",
                 config=config,
                 lang="de",
-                cache="off",
-                examples_mode="off",
-                glossary_mode="off",
-                embedder=None,
-                sqlite_vector_path=None,
+                options=kdeplan.PlannerOptions(
+                    cache="off",
+                    examples_mode="off",
+                    glossary_mode="off",
+                    embedder=None,
+                    sqlite_vector_path=None,
+                ),
             )
             from kdeai import llm as kdellm
             original_forward = kdellm.KDEAITranslator.forward
@@ -468,11 +480,13 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
                 project_id="proj",
                 config=config,
                 lang="de",
-                cache="off",
-                examples_mode="off",
-                glossary_mode="off",
-                embedder=None,
-                sqlite_vector_path=None,
+                options=kdeplan.PlannerOptions(
+                    cache="off",
+                    examples_mode="off",
+                    glossary_mode="off",
+                    embedder=None,
+                    sqlite_vector_path=None,
+                ),
             )
             try:
                 from kdeai import llm as kdellm
