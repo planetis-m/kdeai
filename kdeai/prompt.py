@@ -49,6 +49,7 @@ def _example_translation(example: ExampleMatch) -> str:
 def _format_examples(examples: Sequence[ExampleMatch]) -> str:
     blocks: list[str] = []
     for idx, example in enumerate(examples, start=1):
+        # Keep plan output deterministic by omitting distance or other float metadata.
         source_text = str(getattr(example, "source_text", ""))
         translation = _example_translation(example)
         blocks.append(

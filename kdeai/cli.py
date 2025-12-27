@@ -101,6 +101,13 @@ def _next_pointer_id(pointer_path: Path, key: str) -> int:
     return pointer_id + 1
 
 
+def _next_glossary_id(pointer_path: Path, glossary_dir: Path) -> int:
+    glossary_id = _next_pointer_id(pointer_path, "glossary_id")
+    while (glossary_dir / f"glossary.{glossary_id}.sqlite").exists():
+        glossary_id += 1
+    return glossary_id
+
+
 def _examples_embed_policy(config: Config) -> EmbeddingPolicy:
     return config.prompt.examples.embedding_policy
 
@@ -321,7 +328,7 @@ def plan(
         config=config,
         lang=lang,
         cache=cache_mode,
-        cache_write="off",
+        cache_write=cache_write_flag,
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         embedder=embedder,
@@ -764,7 +771,7 @@ def examples_build(
                 )
             finally:
                 conn.close()
-            source_snapshot = {"kind": "workspace_tm", "snapshot_id": None}
+            source_snapshot = {"kind": "workspace_tm", "snapshot_id": 0}
         else:
             pointer = _read_json(
                 project_root
@@ -871,12 +878,13 @@ def glossary_build(
     db_path = project_root / ".kdeai" / "cache" / "reference" / db_file
     reference_conn = kdedb.connect_readonly(db_path)
     try:
+        glossary_id = _next_glossary_id(pointer_path, pointer_path.parent)
         output_path = (
             project_root
             / ".kdeai"
             / "cache"
             / "glossary"
-            / f"glossary.{int(ref_pointer.get('snapshot_id', 0))}.sqlite"
+            / f"glossary.{glossary_id}.sqlite"
         )
         kdeglossary_path = kdeglo.build_glossary_db(
             reference_conn,
@@ -889,6 +897,7 @@ def glossary_build(
         reference_conn.close()
 
     pointer_payload = {
+        "glossary_id": glossary_id,
         "snapshot_id": int(ref_pointer.get("snapshot_id", 0)),
         "db_file": kdeglossary_path.name,
         "created_at": datetime.now(timezone.utc).isoformat(),

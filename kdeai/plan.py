@@ -11,7 +11,7 @@ import sys
 
 import polib
 
-from kdeai import apply as kdeapply
+from kdeai import state as kdestate
 from kdeai.config import Config
 from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
@@ -135,7 +135,7 @@ class PlanBuilder:
             msgctxt = entry.msgctxt or ""
             msgid = entry.msgid
             msgid_plural = entry.msgid_plural or ""
-            base_state_hash = kdeapply.entry_state_hash(
+            base_state_hash = kdestate.entry_state_hash(
                 entry,
                 lang=self.lang,
                 marker_flags=self.marker_flags,
@@ -374,7 +374,6 @@ def _open_workspace_tm(
         return None
     conn = kdedb.connect_readonly(db_path)
     tm_sqlite = config.sqlite.workspace_tm
-    conn.execute(f"PRAGMA synchronous = {tm_sqlite.synchronous}")
     conn.execute(f"PRAGMA busy_timeout = {int(tm_sqlite.busy_timeout_ms.read)}")
     try:
         kdedb.validate_meta_table(

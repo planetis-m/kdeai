@@ -14,14 +14,13 @@ from kdeai import hash as kdehash
 from kdeai import locks
 from kdeai import po_model
 from kdeai import po_utils
+from kdeai import state as kdestate
 from kdeai.config import Config
 from kdeai import snapshot
 from kdeai import validate
 from kdeai import workspace_tm
 from kdeai.tm_types import SessionTm
 
-DEFAULT_COMMENT_PREFIXES = po_utils.DEFAULT_COMMENT_PREFIXES
-DEFAULT_MARKER_FLAGS = po_utils.DEFAULT_MARKER_FLAGS
 DEFAULT_AI_FLAG = "kdeai-ai"
 ALLOWED_OVERWRITE_POLICIES = {
     "conservative",
@@ -141,31 +140,6 @@ def _entry_key(entry: polib.POEntry) -> tuple[str, str, str]:
     )
 
 
-def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
-    return po_utils.tool_comment_lines(text, prefixes)
-
-
-def _entry_state_hash(
-    entry: polib.POEntry,
-    lang: str,
-    marker_flags: Iterable[str],
-    comment_prefixes: Iterable[str],
-) -> str:
-    source_key = po_model.source_key_for(entry.msgctxt, entry.msgid, entry.msgid_plural)
-    msgstr = entry.msgstr or ""
-    msgstr_plural = {str(k): str(v) for k, v in entry.msgstr_plural.items()}
-    marker_flags_present = [flag for flag in marker_flags if flag in entry.flags]
-    tool_lines = _tool_comment_lines(entry.tcomment, comment_prefixes)
-    return kdehash.state_hash(
-        source_key,
-        lang,
-        msgstr,
-        msgstr_plural,
-        marker_flags_present,
-        tool_lines,
-    )
-
-
 def _marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str, str, str]:
     return po_utils.marker_settings_from_config(config)
 
@@ -177,11 +151,11 @@ def entry_state_hash(
     marker_flags: Iterable[str] | None = None,
     comment_prefixes: Iterable[str] | None = None,
 ) -> str:
-    return _entry_state_hash(
+    return kdestate.entry_state_hash(
         entry,
-        lang,
-        marker_flags or DEFAULT_MARKER_FLAGS,
-        comment_prefixes or DEFAULT_COMMENT_PREFIXES,
+        lang=lang,
+        marker_flags=marker_flags,
+        comment_prefixes=comment_prefixes,
     )
 
 
@@ -285,7 +259,7 @@ def _update_session_tm(
 ) -> None:
     for entry in entries:
         source_key = po_model.source_key_for(entry.msgctxt, entry.msgid, entry.msgid_plural)
-        msgstr_plural = {str(k): str(v) for k, v in entry.msgstr_plural.items()}
+        msgstr_plural = kdestate.canonical_plural_map(entry.msgstr_plural)
         review_status = _derive_review_status(entry, review_prefix)
         is_ai_generated = _derive_is_ai_generated(entry, ai_flag, ai_prefix)
         translation_hash = kdehash.translation_hash(source_key, lang, entry.msgstr or "", msgstr_plural)
@@ -300,6 +274,33 @@ def _update_session_tm(
 
 def _is_tool_owned_prefix(prefix: str, *, tool_prefixes: Iterable[str]) -> bool:
     return any(prefix.startswith(tool_prefix) for tool_prefix in tool_prefixes)
+
+
+def _validate_plan_entry(entry_item: object) -> list[str]:
+    if not isinstance(entry_item, Mapping):
+        return ["plan entry must be an object"]
+    errors: list[str] = []
+    msgid = entry_item.get("msgid")
+    if not isinstance(msgid, str):
+        errors.append("msgid must be a string")
+    if "msgctxt" in entry_item and not isinstance(entry_item.get("msgctxt"), str):
+        errors.append("msgctxt must be a string when provided")
+    if "msgid_plural" in entry_item and not isinstance(entry_item.get("msgid_plural"), str):
+        errors.append("msgid_plural must be a string when provided")
+    base_state_hash = entry_item.get("base_state_hash")
+    if not isinstance(base_state_hash, str):
+        errors.append("base_state_hash must be a string")
+    action = str(entry_item.get("action", ""))
+    if action in {"copy_tm", "llm"}:
+        translation = entry_item.get("translation")
+        if not isinstance(translation, Mapping):
+            errors.append("translation must be an object for copy_tm/llm")
+        else:
+            if not isinstance(translation.get("msgstr"), str):
+                errors.append("translation.msgstr must be a string")
+            if not isinstance(translation.get("msgstr_plural"), Mapping):
+                errors.append("translation.msgstr_plural must be an object")
+    return errors
 
 
 def apply_plan_to_file(
@@ -322,17 +323,16 @@ def apply_plan_to_file(
     po_file = _load_po_from_bytes(phase_a.bytes)
     entry_map = {_entry_key(entry): entry for entry in po_file if entry.msgid != "" and not entry.obsolete}
 
+    file_errors: list[str] = []
     to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     mismatch = False
     mismatch_reason: str | None = None
-    for entry_item in plan_items:
-        if not isinstance(entry_item, Mapping):
-            if ctx.mode == "strict":
-                mismatch = True
-                mismatch_reason = "invalid plan entry"
-                break
-            file_warnings.append(f"{file_path}: ignored invalid plan entry (not an object)")
-            continue
+    for index, entry_item in enumerate(plan_items):
+        entry_errors = _validate_plan_entry(entry_item)
+        if entry_errors:
+            for error in entry_errors:
+                file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
+            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
         action = str(entry_item.get("action", ""))
         if action == "needs_llm":
             continue
@@ -354,11 +354,11 @@ def apply_plan_to_file(
                 mismatch_reason = "missing entry"
                 break
             continue
-        current_hash = _entry_state_hash(
+        current_hash = kdestate.entry_state_hash(
             entry,
-            ctx.lang,
-            ctx.marker_flags,
-            ctx.comment_prefixes,
+            lang=ctx.lang,
+            marker_flags=ctx.marker_flags,
+            comment_prefixes=ctx.comment_prefixes,
         )
         base_state_hash = str(entry_item.get("base_state_hash", ""))
         if current_hash != base_state_hash:
@@ -375,7 +375,6 @@ def apply_plan_to_file(
             file_warnings.append(f"{file_path}: skipped (strict): {reason}")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
-    file_errors: list[str] = []
     applied_entries: list[polib.POEntry] = []
     applied_in_file = 0
     for entry_item, entry, action in to_apply:
@@ -514,7 +513,12 @@ def apply_plan(
 
     selected_mode = str(apply_mode or defaults.get("mode") or "strict")
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
-    post_index_flag = bool(post_index) and isinstance(workspace_conn, sqlite3.Connection)
+    if post_index is None:
+        post_index_setting = str(defaults.get("post_index") or "off")
+        effective_post_index = post_index_setting == "on"
+    else:
+        effective_post_index = bool(post_index)
+    post_index_flag = effective_post_index and isinstance(workspace_conn, sqlite3.Connection)
 
     lang = str(plan.get("lang", ""))
     plan_format = plan.get("format") if isinstance(plan, Mapping) else None
