@@ -881,22 +881,20 @@ def glossary_build(
                     return
             except Exception:
                 pass
-        build_path = output_path
         if output_path.exists():
-            build_path = output_path.with_suffix(
-                f"{output_path.suffix}.new"
+            _exit_with_error(
+                "Glossary DB already exists for reference snapshot "
+                f"{reference_snapshot_id}. Rebuild reference snapshot or use --skip-if-current."
             )
         kdeglossary_path = kdeglo.build_glossary_db(
             reference_conn,
-            output_path=build_path,
+            output_path=output_path,
             config=config,
             project_id=str(project.project_data["project_id"]),
             config_hash=config.config_hash,
         )
     finally:
         reference_conn.close()
-    if kdeglossary_path != output_path:
-        kdeglossary_path.replace(output_path)
 
     created_at = datetime.now(timezone.utc).isoformat()
     try:

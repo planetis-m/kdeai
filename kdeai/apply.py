@@ -284,6 +284,37 @@ def _default_flags_and_comments_for_action(
     return {"add": [], "remove": []}, {"remove_prefixes": [], "ensure_lines": [], "append": ""}
 
 
+def _flags_patch_is_valid(obj: object) -> bool:
+    if not isinstance(obj, Mapping):
+        return False
+    add = obj.get("add")
+    remove = obj.get("remove")
+    if not isinstance(add, (list, tuple)) or not isinstance(remove, (list, tuple)):
+        return False
+    return all(isinstance(item, str) for item in add) and all(
+        isinstance(item, str) for item in remove
+    )
+
+
+def _comments_patch_is_valid(obj: object) -> bool:
+    if not isinstance(obj, Mapping):
+        return False
+    remove_prefixes = obj.get("remove_prefixes")
+    ensure_lines = obj.get("ensure_lines")
+    append = obj.get("append")
+    if not isinstance(remove_prefixes, (list, tuple)) or not all(
+        isinstance(item, str) for item in remove_prefixes
+    ):
+        return False
+    if not isinstance(ensure_lines, (list, tuple)) or not all(
+        isinstance(item, str) for item in ensure_lines
+    ):
+        return False
+    if not isinstance(append, str):
+        return False
+    return append == "" or append.endswith("\n")
+
+
 def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
     return po_utils.is_reviewed(entry, review_prefix)
 
@@ -542,17 +573,21 @@ def apply_plan_to_file(
 
         flags = entry_item.get("flags")
         comments = entry_item.get("comments")
-        if flags is None or comments is None:
+        flags_ok = _flags_patch_is_valid(flags)
+        comments_ok = _comments_patch_is_valid(comments)
+        if not flags_ok or not comments_ok:
             tm_scope = entry_item.get("tm_scope") if action == PlanAction.COPY_TM else None
+            if tm_scope not in {"session", "workspace", "reference"}:
+                tm_scope = "unknown"
             default_flags, default_comments = _default_flags_and_comments_for_action(
                 action,
                 config=config,
                 tm_scope=str(tm_scope) if tm_scope is not None else None,
                 model_id=model_id,
             )
-            if flags is None:
+            if not flags_ok:
                 flags = default_flags
-            if comments is None:
+            if not comments_ok:
                 comments = default_comments
 
         if flags is not None:
