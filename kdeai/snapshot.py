@@ -16,11 +16,10 @@ class LockedRead:
     size: int
 
 
-def locked_read_file(file_path: Path, lock_path: Path) -> LockedRead:
-    with locks.acquire_file_lock(lock_path):
-        data = Path(file_path).read_bytes()
-        sha256_hex = hashlib.sha256(data).hexdigest()
-        stat = Path(file_path).stat()
+def read_file_snapshot(file_path: Path) -> LockedRead:
+    data = Path(file_path).read_bytes()
+    sha256_hex = hashlib.sha256(data).hexdigest()
+    stat = Path(file_path).stat()
 
     return LockedRead(
         file_path=Path(file_path).as_posix(),
@@ -29,3 +28,8 @@ def locked_read_file(file_path: Path, lock_path: Path) -> LockedRead:
         mtime_ns=stat.st_mtime_ns,
         size=stat.st_size,
     )
+
+
+def locked_read_file(file_path: Path, lock_path: Path) -> LockedRead:
+    with locks.acquire_file_lock(lock_path):
+        return read_file_snapshot(file_path)

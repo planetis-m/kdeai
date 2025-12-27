@@ -260,7 +260,13 @@ def _create_vector_index(
     embedding_dim: int,
     embedding_distance: str,
 ) -> None:
-    distance = embedding_distance.upper()
+    distance_map = {
+        "cosine": "COSINE",
+        "l2": "L2",
+    }
+    distance = distance_map.get(embedding_distance)
+    if distance is None:
+        raise ValueError(f"unsupported embedding distance: {embedding_distance}")
     conn.execute(
         "SELECT vector_init('examples', 'embedding', ?)",
         (f"type=FLOAT32,dimension={embedding_dim},distance={distance}",),
@@ -289,6 +295,8 @@ def _build_examples_db(
     vector_encoding = str(policy.encoding)
     embedding_normalization = str(policy.normalization)
     require_finite = bool(policy.require_finite)
+    if vector_encoding != "float32_le":
+        raise ValueError(f"unsupported vector encoding: {vector_encoding}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():

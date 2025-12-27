@@ -41,6 +41,19 @@ class ApplyResult:
 
 
 @dataclass(frozen=True)
+class ApplyContext:
+    lang: str
+    mode: str
+    overwrite_policy: str
+    marker_flags: list[str]
+    comment_prefixes: list[str]
+    review_prefix: str
+    ai_prefix: str
+    ai_flag: str
+    placeholder_patterns: list[str]
+
+
+@dataclass(frozen=True)
 class ApplyFileResult:
     file_path: str
     wrote: bool
@@ -61,8 +74,8 @@ def _validate_plan_header(
     ai_flag: str,
     placeholder_patterns: list[str],
 ) -> list[str]:
-    plan_project_id = str(plan.get("project_id", ""))
-    if plan_project_id != project_id:
+    plan_project_id = str(plan.get("project_id", "")).strip()
+    if plan_project_id and plan_project_id != project_id:
         return ["plan project_id does not match current project"]
     plan_config_hash = str(plan.get("config_hash", ""))
     if not plan_config_hash or plan_config_hash != config.config_hash:
@@ -288,23 +301,18 @@ def _update_session_tm(
 def apply_plan_to_file(
     file_path: str,
     plan_items: list,
-    mode: str,
-    overwrite_policy: str,
     *,
+    ctx: ApplyContext,
     full_path: Path,
     lock_path: Path,
     base_sha256: str,
-    lang: str,
-    marker_flags: Iterable[str],
-    comment_prefixes: Iterable[str],
-    placeholder_patterns: Iterable[str],
-    review_prefix: str = "KDEAI-REVIEW:",
 ) -> ApplyFileResult:
-    tool_prefixes = [str(prefix) for prefix in comment_prefixes]
+    tool_prefixes = [str(prefix) for prefix in ctx.comment_prefixes]
     tool_prefix_set = set(tool_prefixes)
     file_warnings: list[str] = []
     phase_a = snapshot.locked_read_file(full_path, lock_path)
-    if mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
+    if ctx.mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
+        file_warnings.append(f"{file_path}: skipped (strict): base_sha256 mismatch")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     po_file = _load_po_from_bytes(phase_a.bytes)
@@ -332,20 +340,27 @@ def apply_plan_to_file(
         )
         entry = entry_map.get(key)
         if entry is None:
-            if mode == "strict":
+            if ctx.mode == "strict":
                 mismatch = True
                 break
             continue
-        current_hash = _entry_state_hash(entry, lang, marker_flags, comment_prefixes)
+        current_hash = _entry_state_hash(
+            entry,
+            ctx.lang,
+            ctx.marker_flags,
+            ctx.comment_prefixes,
+        )
         base_state_hash = str(entry_item.get("base_state_hash", ""))
         if current_hash != base_state_hash:
-            if mode == "strict":
+            if ctx.mode == "strict":
                 mismatch = True
                 break
             continue
         to_apply.append((entry_item, entry, action))
 
     if mismatch:
+        if ctx.mode == "strict":
+            file_warnings.append(f"{file_path}: skipped (strict): entry state mismatch")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     file_errors: list[str] = []
@@ -353,8 +368,8 @@ def apply_plan_to_file(
     applied_in_file = 0
     for entry_item, entry, action in to_apply:
         current_non_empty = _has_non_empty_translation(entry)
-        reviewed = _is_reviewed(entry, review_prefix)
-        if not _can_overwrite(current_non_empty, reviewed, overwrite_policy):
+        reviewed = _is_reviewed(entry, ctx.review_prefix)
+        if not _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
             continue
 
         translation = entry_item.get("translation") if isinstance(entry_item, Mapping) else None
@@ -389,6 +404,9 @@ def apply_plan_to_file(
             if not isinstance(ensure_lines, (list, tuple)):
                 file_errors.append("plan comments ensure_lines must be a list")
                 break
+            if append.strip():
+                file_errors.append("plan comments append is not supported")
+                break
             normalized_remove = [str(prefix) for prefix in remove_prefixes]
             if any(prefix not in tool_prefix_set for prefix in normalized_remove):
                 file_errors.append("plan comments remove_prefixes must use tool prefixes")
@@ -400,7 +418,7 @@ def apply_plan_to_file(
             ):
                 file_errors.append("plan comments ensure_lines must use tool prefixes")
                 break
-            _apply_comments(entry, normalized_remove, normalized_ensure, append)
+            _apply_comments(entry, normalized_remove, normalized_ensure, "")
 
         plural_forms = po_file.metadata.get("Plural-Forms")
         validation_errors = validate.validate_entry(
@@ -409,7 +427,7 @@ def apply_plan_to_file(
             msgstr=entry.msgstr or "",
             msgstr_plural={str(k): str(v) for k, v in entry.msgstr_plural.items()},
             plural_forms=plural_forms,
-            placeholder_patterns=placeholder_patterns,
+            placeholder_patterns=ctx.placeholder_patterns,
         )
         if validation_errors:
             file_errors.extend(validation_errors)
@@ -439,20 +457,25 @@ def apply_plan_to_file(
     finally:
         tmp_handle.close()
 
+    cleanup_path = tmp_name
+    result: ApplyFileResult | None = None
     try:
         with locks.acquire_file_lock(lock_path):
-            current_bytes = full_path.read_bytes()
-            current_sha = hashlib.sha256(current_bytes).hexdigest()
-            if current_sha != phase_a.sha256:
-                os.unlink(tmp_name)
-                return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
-            if mode == "strict" and current_sha != base_sha256:
-                os.unlink(tmp_name)
-                return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
-            os.replace(tmp_name, full_path)
+            phase_c = snapshot.read_file_snapshot(full_path)
+            if phase_c.sha256 != phase_a.sha256:
+                result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
+            elif ctx.mode == "strict" and phase_c.sha256 != base_sha256:
+                result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
+            else:
+                os.replace(tmp_name, full_path)
+                cleanup_path = None
+        if result is not None:
+            if cleanup_path and Path(cleanup_path).exists():
+                os.unlink(cleanup_path)
+            return result
     except Exception:
-        if Path(tmp_name).exists():
-            os.unlink(tmp_name)
+        if cleanup_path and Path(cleanup_path).exists():
+            os.unlink(cleanup_path)
         raise
 
     return ApplyFileResult(file_path, True, False, applied_in_file, [], file_warnings, applied_entries)
@@ -484,6 +507,17 @@ def apply_plan(
         _marker_settings_from_config(config)
     )
     placeholder_patterns = list(config.apply.validation_patterns)
+    ctx = ApplyContext(
+        lang=lang,
+        mode=selected_mode,
+        overwrite_policy=selected_overwrite,
+        marker_flags=list(marker_flags),
+        comment_prefixes=list(comment_prefixes),
+        review_prefix=review_prefix,
+        ai_prefix=ai_prefix,
+        ai_flag=ai_flag,
+        placeholder_patterns=placeholder_patterns,
+    )
 
     errors = _validate_plan_header(
         plan,
@@ -513,17 +547,24 @@ def apply_plan(
     entries_applied = 0
 
     files = plan.get("files") if isinstance(plan, Mapping) else None
-    if not isinstance(files, Iterable):
-        return ApplyResult(files_written, files_skipped, entries_applied, ["invalid plan files"], warnings)
+    if not isinstance(files, list):
+        return ApplyResult(files_written, files_skipped, entries_applied, ["plan files must be a list"], warnings)
     if errors:
         return ApplyResult(files_written, files_skipped, entries_applied, errors, warnings)
 
     files_list = list(files)
     project_root_resolved = project_root.resolve()
     path_errors: list[str] = []
+    entries_errors: list[str] = []
     for file_item in files_list:
         if not isinstance(file_item, Mapping):
             continue
+        if "entries" in file_item and not isinstance(file_item.get("entries"), list):
+            entry_file_path = str(file_item.get("file_path", ""))
+            if entry_file_path:
+                entries_errors.append(f"plan entries must be a list: {entry_file_path}")
+            else:
+                entries_errors.append("plan entries must be a list")
         file_path = str(file_item.get("file_path", ""))
         if not file_path:
             path_errors.append("plan file_path is invalid: empty")
@@ -549,13 +590,18 @@ def apply_plan(
 
     if path_errors:
         return ApplyResult(files_written, files_skipped, entries_applied, path_errors, warnings)
+    if entries_errors:
+        return ApplyResult(files_written, files_skipped, entries_applied, entries_errors, warnings)
 
     for file_item in files_list:
         if not isinstance(file_item, Mapping):
             continue
         file_path = str(file_item.get("file_path", ""))
         base_sha256 = str(file_item.get("base_sha256", ""))
-        entries = list(file_item.get("entries", []))
+        if "entries" in file_item:
+            entries = list(file_item.get("entries"))
+        else:
+            entries = []
 
         relpath_key = file_path.casefold() if path_casefold else file_path
         lock_path = locks.per_file_lock_path(
@@ -567,16 +613,10 @@ def apply_plan(
             file_result = apply_plan_to_file(
                 file_path,
                 entries,
-                selected_mode,
-                selected_overwrite,
+                ctx=ctx,
                 full_path=full_path,
                 lock_path=lock_path,
                 base_sha256=base_sha256,
-                lang=lang,
-                marker_flags=marker_flags,
-                comment_prefixes=comment_prefixes,
-                placeholder_patterns=placeholder_patterns,
-                review_prefix=review_prefix,
             )
         except Exception as exc:
             errors.append(f"{file_path}: {exc}")
@@ -609,17 +649,15 @@ def apply_plan(
             if post_index_flag:
                 try:
                     full_path = project_root / file_path
-                    data = full_path.read_bytes()
-                    sha256_hex = hashlib.sha256(data).hexdigest()
-                    stat = full_path.stat()
+                    snap = snapshot.locked_read_file(full_path, lock_path)
                     workspace_tm.index_file_snapshot_tm(
                         workspace_conn,
                         file_path=file_path,
                         lang=lang,
-                        bytes=data,
-                        sha256=sha256_hex,
-                        mtime_ns=stat.st_mtime_ns,
-                        size=stat.st_size,
+                        bytes=snap.bytes,
+                        sha256=snap.sha256,
+                        mtime_ns=snap.mtime_ns,
+                        size=snap.size,
                         config=config,
                     )
                 except Exception as exc:
