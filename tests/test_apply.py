@@ -677,7 +677,12 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 overwrite="conservative",
             )
             self.assertEqual(result.files_written, [])
-            self.assertIn("plan comments append must end with \\n", result.errors)
+            self.assertTrue(
+                any(
+                    "plan comments append must end with \\n" in error
+                    for error in result.errors
+                )
+            )
 
     def test_comment_append_applies(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1003,6 +1008,12 @@ class TestApplyAdditionalCases(unittest.TestCase):
             self.assertEqual(result.files_written, [])
             self.assertEqual(result.files_skipped, ["locale/de.po"])
             self.assertIn("locale/de.po: skipped: file changed since phase A", result.warnings)
+            self.assertIn("# change", po_path.read_text(encoding="utf-8"))
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(updated_entry.msgstr, "")
+            po_files = sorted(path.name for path in po_path.parent.glob("*.po"))
+            self.assertEqual(po_files, ["de.po"])
 
     def test_needs_llm_action_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1044,6 +1055,55 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
+
+    def test_apply_uses_single_temp_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            call_count = 0
+            original_tempfile = tempfile.NamedTemporaryFile
+
+            def _counting_named_tempfile(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return original_tempfile(*args, **kwargs)
+
+            with mock.patch(
+                "kdeai.apply.tempfile.NamedTemporaryFile",
+                side_effect=_counting_named_tempfile,
+            ):
+                result = apply.apply_plan(
+                    plan_payload,
+                    project_root=root,
+                    project_id="proj",
+                    path_casefold=False,
+                    config=config,
+                    apply_mode="strict",
+                    overwrite="conservative",
+                )
+
+            self.assertEqual(result.files_written, ["locale/de.po"])
+            self.assertEqual(call_count, 2)
 
     def test_llm_action_empty_translation_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1466,7 +1526,9 @@ class TestApplyAdditionalCases(unittest.TestCase):
             )
 
             self.assertTrue(result.errors)
-            self.assertTrue(any("File" in error for error in result.errors))
+            self.assertTrue(
+                any("locale/de.po: invalid plan entry 0" in error for error in result.errors)
+            )
 
     def test_apply_preserves_warnings_on_strict_mismatch(self):
         with tempfile.TemporaryDirectory() as tmpdir:

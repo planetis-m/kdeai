@@ -21,7 +21,6 @@ from kdeai import validate
 from kdeai import workspace_tm
 from kdeai.tm_types import SessionTm
 
-DEFAULT_AI_FLAG = "kdeai-ai"
 ALLOWED_OVERWRITE_POLICIES = {
     "conservative",
     "allow-nonempty",
@@ -119,17 +118,6 @@ def _validate_plan_header(
 
 def _load_po_from_bytes(data: bytes) -> polib.POFile:
     return po_utils.load_po_from_bytes(data)
-
-
-def _serialize_po(po_file: polib.POFile) -> bytes:
-    with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        po_file.save(tmp_path)
-        return Path(tmp_path).read_bytes()
-    finally:
-        if Path(tmp_path).exists():
-            os.unlink(tmp_path)
 
 
 def _entry_key(entry: polib.POEntry) -> tuple[str, str, str]:
@@ -300,6 +288,41 @@ def _validate_plan_entry(entry_item: object) -> list[str]:
                 errors.append("translation.msgstr must be a string")
             if not isinstance(translation.get("msgstr_plural"), Mapping):
                 errors.append("translation.msgstr_plural must be an object")
+    flags = entry_item.get("flags")
+    if flags is not None:
+        if not isinstance(flags, Mapping):
+            errors.append("flags must be an object when provided")
+        else:
+            add_flags = flags.get("add", [])
+            remove_flags = flags.get("remove", [])
+            if not isinstance(add_flags, (list, tuple)):
+                errors.append("flags.add must be a list")
+            elif any(not isinstance(flag, str) for flag in add_flags):
+                errors.append("flags.add must be a list of strings")
+            if not isinstance(remove_flags, (list, tuple)):
+                errors.append("flags.remove must be a list")
+            elif any(not isinstance(flag, str) for flag in remove_flags):
+                errors.append("flags.remove must be a list of strings")
+    comments = entry_item.get("comments")
+    if comments is not None:
+        if not isinstance(comments, Mapping):
+            errors.append("comments must be an object when provided")
+        else:
+            remove_prefixes = comments.get("remove_prefixes", [])
+            ensure_lines = comments.get("ensure_lines", [])
+            append = comments.get("append", "")
+            if not isinstance(remove_prefixes, (list, tuple)):
+                errors.append("plan comments remove_prefixes must be a list")
+            elif any(not isinstance(prefix, str) for prefix in remove_prefixes):
+                errors.append("plan comments remove_prefixes must be a list of strings")
+            if not isinstance(ensure_lines, (list, tuple)):
+                errors.append("plan comments ensure_lines must be a list")
+            elif any(not isinstance(line, str) for line in ensure_lines):
+                errors.append("plan comments ensure_lines must be a list of strings")
+            if not isinstance(append, str):
+                errors.append("plan comments append must be a string")
+            elif append != "" and not append.endswith("\n"):
+                errors.append("plan comments append must end with \\n")
     return errors
 
 
@@ -338,9 +361,9 @@ def apply_plan_to_file(
             continue
         if action not in {"copy_tm", "llm"}:
             if action:
-                file_warnings.append(f"unsupported action: {action}")
+                file_warnings.append(f"{file_path}: unsupported action: {action}")
             else:
-                file_warnings.append("unsupported action: missing")
+                file_warnings.append(f"{file_path}: unsupported action: missing")
             continue
         key = (
             str(entry_item.get("msgctxt", "")),
@@ -409,15 +432,6 @@ def apply_plan_to_file(
             remove_prefixes = comments.get("remove_prefixes", [])
             ensure_lines = comments.get("ensure_lines", [])
             append = str(comments.get("append", ""))
-            if not isinstance(remove_prefixes, (list, tuple)):
-                file_errors.append("plan comments remove_prefixes must be a list")
-                break
-            if not isinstance(ensure_lines, (list, tuple)):
-                file_errors.append("plan comments ensure_lines must be a list")
-                break
-            if append != "" and not append.endswith("\n"):
-                file_errors.append("plan comments append must end with \\n")
-                break
             normalized_remove = [str(prefix) for prefix in remove_prefixes]
             if any(
                 not _is_tool_owned_prefix(prefix, tool_prefixes=tool_prefixes)
@@ -439,7 +453,7 @@ def apply_plan_to_file(
             msgid=entry.msgid,
             msgid_plural=entry.msgid_plural or "",
             msgstr=entry.msgstr or "",
-            msgstr_plural={str(k): str(v) for k, v in entry.msgstr_plural.items()},
+            msgstr_plural=kdestate.canonical_plural_map(entry.msgstr_plural),
             plural_forms=plural_forms,
             placeholder_patterns=ctx.placeholder_patterns,
         )
@@ -456,20 +470,22 @@ def apply_plan_to_file(
     if applied_in_file == 0:
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
-    new_bytes = _serialize_po(po_file)
-
     tmp_handle = tempfile.NamedTemporaryFile(
-        mode="wb",
         dir=str(full_path.parent),
+        suffix=".po",
         delete=False,
     )
+    tmp_name = tmp_handle.name
+    tmp_handle.close()
+
     try:
-        tmp_handle.write(new_bytes)
-        tmp_handle.flush()
-        os.fsync(tmp_handle.fileno())
-        tmp_name = tmp_handle.name
-    finally:
-        tmp_handle.close()
+        po_file.save(tmp_name)
+        with open(tmp_name, "rb") as tmp_file:
+            os.fsync(tmp_file.fileno())
+    except Exception:
+        if Path(tmp_name).exists():
+            os.unlink(tmp_name)
+        raise
 
     cleanup_path = tmp_name
     result: ApplyFileResult | None = None

@@ -100,10 +100,11 @@ class TestSnapshot(unittest.TestCase):
             lock_path = locks.per_file_lock_path(root, lock_id)
 
             result = snapshot.locked_read_file(target, lock_path)
+            stat = target.stat()
             self.assertEqual(result.bytes, b"abc")
             self.assertEqual(result.sha256, hashlib.sha256(b"abc").hexdigest())
-            self.assertEqual(result.size, 3)
-            self.assertEqual(result.file_path, str(target))
+            self.assertEqual(result.size, stat.st_size)
+            self.assertEqual(result.mtime_ns, stat.st_mtime_ns)
 
 
 if __name__ == "__main__":
