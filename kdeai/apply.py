@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 import hashlib
@@ -90,6 +90,122 @@ class ApplyFileResult:
     applied_entries: list[polib.POEntry]
 
 
+def _normalize_str_list(
+    value: object,
+    field_label: str,
+    errors: list[str],
+) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        errors.append(f"{field_label} must be a list")
+        return None
+    return [str(item) for item in value]
+
+
+@dataclass
+class PlanHeaderValidator:
+    plan: Mapping[str, object]
+    project_id: str
+    config_hash: str
+    marker_flags: list[str]
+    comment_prefixes: list[str]
+    ai_flag: str
+    placeholder_patterns: list[str]
+    errors: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        plan_project_id = str(self.plan.get("project_id", "")).strip()
+        if not plan_project_id:
+            self.errors.append("plan project_id missing")
+            return
+        if plan_project_id != self.project_id:
+            self.errors.append("plan project_id does not match current project")
+            return
+        plan_config_hash = str(self.plan.get("config_hash", ""))
+        if not plan_config_hash or plan_config_hash != self.config_hash:
+            self.errors.append("plan config_hash does not match current config")
+            return
+
+        plan_marker_flags = _normalize_str_list(
+            self.plan.get("marker_flags"),
+            "plan marker_flags",
+            self.errors,
+        )
+        if plan_marker_flags is not None and sorted(plan_marker_flags) != sorted(self.marker_flags):
+            self.errors.append("plan marker_flags do not match config")
+
+        plan_comment_prefixes = _normalize_str_list(
+            self.plan.get("comment_prefixes"),
+            "plan comment_prefixes",
+            self.errors,
+        )
+        if (
+            plan_comment_prefixes is not None
+            and sorted(plan_comment_prefixes) != sorted(self.comment_prefixes)
+        ):
+            self.errors.append("plan comment_prefixes do not match config")
+
+        plan_ai_flag = self.plan.get("ai_flag")
+        if plan_ai_flag is not None and str(plan_ai_flag) != self.ai_flag:
+            self.errors.append("plan ai_flag does not match config")
+
+        plan_placeholder_patterns = _normalize_str_list(
+            self.plan.get("placeholder_patterns"),
+            "plan placeholder_patterns",
+            self.errors,
+        )
+        if (
+            plan_placeholder_patterns is not None
+            and plan_placeholder_patterns != self.placeholder_patterns
+        ):
+            self.errors.append("plan placeholder_patterns do not match config")
+
+
+@dataclass
+class PlanEntryValidator:
+    entry_item: object
+    errors: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry_item, Mapping):
+            self.errors.append("plan entry must be an object")
+            return
+        msgid = self.entry_item.get("msgid")
+        if not isinstance(msgid, str):
+            self.errors.append("msgid must be a string")
+        if "msgctxt" in self.entry_item and not isinstance(self.entry_item.get("msgctxt"), str):
+            self.errors.append("msgctxt must be a string when provided")
+        if "msgid_plural" in self.entry_item and not isinstance(
+            self.entry_item.get("msgid_plural"), str
+        ):
+            self.errors.append("msgid_plural must be a string when provided")
+        base_state_hash = self.entry_item.get("base_state_hash")
+        if not isinstance(base_state_hash, str):
+            self.errors.append("base_state_hash must be a string")
+        action = str(self.entry_item.get("action", ""))
+        if action in {PlanAction.COPY_TM, PlanAction.LLM}:
+            translation = self.entry_item.get("translation")
+            if not isinstance(translation, Mapping):
+                self.errors.append("translation must be an object for copy_tm/llm")
+            else:
+                if not isinstance(translation.get("msgstr"), str):
+                    self.errors.append("translation.msgstr must be a string")
+                if not isinstance(translation.get("msgstr_plural"), Mapping):
+                    self.errors.append("translation.msgstr_plural must be an object")
+            tag_profile = self.entry_item.get("tag_profile")
+            if not isinstance(tag_profile, str):
+                self.errors.append("tag_profile must be a string for copy_tm/llm")
+            else:
+                expected_profile = "tm_copy" if action == PlanAction.COPY_TM else "llm"
+                if tag_profile != expected_profile:
+                    self.errors.append(f"tag_profile must be {expected_profile!r} for {action}")
+        if "flags" in self.entry_item:
+            self.errors.append("plan entries must not include flags")
+        if "comments" in self.entry_item:
+            self.errors.append("plan entries must not include comments")
+
+
 def _validate_plan_header(
     plan: Mapping[str, object],
     *,
@@ -100,48 +216,16 @@ def _validate_plan_header(
     ai_flag: str,
     placeholder_patterns: list[str],
 ) -> list[str]:
-    plan_project_id = str(plan.get("project_id", "")).strip()
-    if not plan_project_id:
-        return ["plan project_id missing"]
-    if plan_project_id != project_id:
-        return ["plan project_id does not match current project"]
-    plan_config_hash = str(plan.get("config_hash", ""))
-    if not plan_config_hash or plan_config_hash != config.config_hash:
-        return ["plan config_hash does not match current config"]
-
-    errors: list[str] = []
-    plan_marker_flags = plan.get("marker_flags")
-    if plan_marker_flags is not None:
-        if not isinstance(plan_marker_flags, (list, tuple)):
-            errors.append("plan marker_flags must be a list")
-        else:
-            normalized = [str(flag) for flag in plan_marker_flags]
-            if sorted(normalized) != sorted(marker_flags):
-                errors.append("plan marker_flags do not match config")
-
-    plan_comment_prefixes = plan.get("comment_prefixes")
-    if plan_comment_prefixes is not None:
-        if not isinstance(plan_comment_prefixes, (list, tuple)):
-            errors.append("plan comment_prefixes must be a list")
-        else:
-            normalized = [str(prefix) for prefix in plan_comment_prefixes]
-            if sorted(normalized) != sorted(comment_prefixes):
-                errors.append("plan comment_prefixes do not match config")
-
-    plan_ai_flag = plan.get("ai_flag")
-    if plan_ai_flag is not None and str(plan_ai_flag) != ai_flag:
-        errors.append("plan ai_flag does not match config")
-
-    plan_placeholder_patterns = plan.get("placeholder_patterns")
-    if plan_placeholder_patterns is not None:
-        if not isinstance(plan_placeholder_patterns, (list, tuple)):
-            errors.append("plan placeholder_patterns must be a list")
-        else:
-            normalized = [str(pattern) for pattern in plan_placeholder_patterns]
-            if normalized != placeholder_patterns:
-                errors.append("plan placeholder_patterns do not match config")
-
-    return errors
+    validator = PlanHeaderValidator(
+        plan=plan,
+        project_id=project_id,
+        config_hash=config.config_hash,
+        marker_flags=marker_flags,
+        comment_prefixes=comment_prefixes,
+        ai_flag=ai_flag,
+        placeholder_patterns=placeholder_patterns,
+    )
+    return validator.errors
 
 
 def _fsync_file(path: Path) -> None:
@@ -321,41 +405,7 @@ def _update_session_tm(
 
 
 def _validate_plan_entry(entry_item: object) -> list[str]:
-    if not isinstance(entry_item, Mapping):
-        return ["plan entry must be an object"]
-    errors: list[str] = []
-    msgid = entry_item.get("msgid")
-    if not isinstance(msgid, str):
-        errors.append("msgid must be a string")
-    if "msgctxt" in entry_item and not isinstance(entry_item.get("msgctxt"), str):
-        errors.append("msgctxt must be a string when provided")
-    if "msgid_plural" in entry_item and not isinstance(entry_item.get("msgid_plural"), str):
-        errors.append("msgid_plural must be a string when provided")
-    base_state_hash = entry_item.get("base_state_hash")
-    if not isinstance(base_state_hash, str):
-        errors.append("base_state_hash must be a string")
-    action = str(entry_item.get("action", ""))
-    if action in {PlanAction.COPY_TM, PlanAction.LLM}:
-        translation = entry_item.get("translation")
-        if not isinstance(translation, Mapping):
-            errors.append("translation must be an object for copy_tm/llm")
-        else:
-            if not isinstance(translation.get("msgstr"), str):
-                errors.append("translation.msgstr must be a string")
-            if not isinstance(translation.get("msgstr_plural"), Mapping):
-                errors.append("translation.msgstr_plural must be an object")
-        tag_profile = entry_item.get("tag_profile")
-        if not isinstance(tag_profile, str):
-            errors.append("tag_profile must be a string for copy_tm/llm")
-        else:
-            expected_profile = "tm_copy" if action == PlanAction.COPY_TM else "llm"
-            if tag_profile != expected_profile:
-                errors.append(f"tag_profile must be {expected_profile!r} for {action}")
-    if "flags" in entry_item:
-        errors.append("plan entries must not include flags")
-    if "comments" in entry_item:
-        errors.append("plan entries must not include comments")
-    return errors
+    return PlanEntryValidator(entry_item=entry_item).errors
 
 
 def _phase1_validate_and_filter(

@@ -366,7 +366,7 @@ class TestEmbeddingPacking(unittest.TestCase):
             )
 
     def test_normalize_embedding_l2(self):
-        normalized = examples._normalize_embedding([3.0, 4.0], "l2_normalize")
+        normalized = examples.normalize_embedding([3.0, 4.0], "l2_normalize")
         self.assertAlmostEqual(normalized[0], 0.6, places=6)
         self.assertAlmostEqual(normalized[1], 0.8, places=6)
 
