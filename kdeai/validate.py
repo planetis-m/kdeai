@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Iterable, Mapping, Pattern
 
 
@@ -104,12 +105,12 @@ class TagIntegrityValidator:
                     source_text = msgid if str(key) == "0" else msgid_plural
                     source_tokens = _extract_tokens(source_text, compiled)
                     target_tokens = _extract_tokens(str(msgstr_plural.get(key, "")), compiled)
-                    if target_tokens != source_tokens:
+                    if Counter(target_tokens) != Counter(source_tokens):
                         return self.error_message
             else:
                 source_tokens = _extract_tokens(msgid, compiled)
                 target_tokens = _extract_tokens(msgstr, compiled)
-                if target_tokens != source_tokens:
+                if Counter(target_tokens) != Counter(source_tokens):
                     return self.error_message
         return None
 

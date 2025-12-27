@@ -56,6 +56,8 @@ CREATE INDEX idx_trans_lookup ON translations(source_key, lang);
 CREATE INDEX idx_best_lang ON best_translations(lang);
 """
 
+SUPPORTED_SCHEMA_VERSION = "1"
+
 REFERENCE_TM_SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
@@ -183,9 +185,11 @@ def connect_workspace_tm(
     return conn
 
 
-def connect_readonly(path: Path) -> sqlite3.Connection:
+def connect_readonly(path: Path, *, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
     uri = f"file:{path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
+    if busy_timeout_ms is not None:
+        _apply_pragma(conn, "busy_timeout", int(busy_timeout_ms))
     _apply_pragma(conn, "query_only", True)
     return conn
 
@@ -194,21 +198,16 @@ def connect_writable(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(str(path))
 
 
-def get_db_connection(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
+def try_enable_sqlite_vector(conn: sqlite3.Connection, *, extension_path: str) -> bool:
+    """Attempt to load sqlite-vector without leaving extension loading enabled."""
     conn.enable_load_extension(True)
-    if Path("./vector.so").exists():
-        conn.load_extension("./vector.so")
-    else:
-        raise RuntimeError("vector.so not found in current directory")
-    return conn
-
-
-def enable_sqlite_vector(conn: sqlite3.Connection, *, extension_path: str) -> None:
-    """Enable and load sqlite-vector before running vector index queries."""
-    conn.enable_load_extension(True)
-    conn.load_extension(extension_path)
-    conn.enable_load_extension(False)
+    try:
+        conn.load_extension(extension_path)
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.enable_load_extension(False)
+    return True
 
 
 def read_meta(conn: sqlite3.Connection) -> dict[str, str]:
@@ -247,6 +246,10 @@ def validate_meta(
     expected_normalization_id: str | None = None,
 ) -> None:
     _require_keys(meta, ["schema_version", "kind", "project_id", "config_hash", "created_at"])
+    if meta["schema_version"] != SUPPORTED_SCHEMA_VERSION:
+        raise ValueError(
+            f"meta schema_version unsupported: expected {SUPPORTED_SCHEMA_VERSION}, got {meta['schema_version']}"
+        )
 
     kind = meta["kind"]
     if expected_kind is not None and kind != expected_kind:

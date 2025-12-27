@@ -142,8 +142,8 @@ def entry_state_hash(
     entry: polib.POEntry,
     *,
     lang: str,
-    marker_flags: Iterable[str] | None = None,
-    comment_prefixes: Iterable[str] | None = None,
+    marker_flags: Iterable[str],
+    comment_prefixes: Iterable[str],
 ) -> str:
     return kdestate.entry_state_hash(
         entry,
@@ -352,6 +352,10 @@ def apply_plan_to_file(
     base_sha256: str,
 ) -> ApplyFileResult:
     tool_prefixes = [str(prefix) for prefix in ctx.comment_prefixes]
+    marker_flags = list(ctx.marker_flags)
+    if ctx.ai_flag not in marker_flags:
+        marker_flags.append(ctx.ai_flag)
+    comment_prefixes = list(ctx.comment_prefixes)
 
     file_warnings: list[str] = []
     phase_a = snapshot.locked_read_file(full_path, lock_path, relpath=file_path)
@@ -396,8 +400,8 @@ def apply_plan_to_file(
         current_hash = kdestate.entry_state_hash(
             entry,
             lang=ctx.lang,
-            marker_flags=ctx.marker_flags,
-            comment_prefixes=ctx.comment_prefixes,
+            marker_flags=marker_flags,
+            comment_prefixes=comment_prefixes,
         )
         base_state_hash = str(entry_item.get("base_state_hash", ""))
         if current_hash != base_state_hash:

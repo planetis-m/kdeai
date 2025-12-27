@@ -120,6 +120,27 @@ class TestValidators(unittest.TestCase):
         )
         self.assertIn("tag/placeholder integrity", errors)
 
+    def test_tag_integrity_allows_reordered_placeholders(self):
+        errors = validate.validate_entry(
+            msgid="Value %1 %2",
+            msgid_plural="",
+            msgstr="Wert %2 %1",
+            msgstr_plural={},
+            plural_forms=None,
+            placeholder_patterns=[r"%\d"],
+        )
+        self.assertNotIn("tag/placeholder integrity", errors)
+
+        errors = validate.validate_entry(
+            msgid="Value %1 %2",
+            msgid_plural="",
+            msgstr="Wert %1",
+            msgstr_plural={},
+            plural_forms=None,
+            placeholder_patterns=[r"%\d"],
+        )
+        self.assertIn("tag/placeholder integrity", errors)
+
 
 if __name__ == "__main__":
     unittest.main()

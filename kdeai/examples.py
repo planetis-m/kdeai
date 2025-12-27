@@ -360,12 +360,10 @@ def _build_examples_db(
 
         if not sqlite_vector_path:
             raise ValueError("sqlite-vector extension path is required to build examples")
-        try:
-            kdedb.enable_sqlite_vector(conn, extension_path=sqlite_vector_path)
-        except Exception as exc:
+        if not kdedb.try_enable_sqlite_vector(conn, extension_path=sqlite_vector_path):
             raise RuntimeError(
-                f"failed to load sqlite-vector extension at {sqlite_vector_path}: {exc}"
-            ) from exc
+                f"failed to load sqlite-vector extension at {sqlite_vector_path}"
+            )
 
         _create_vector_index(
             conn,
@@ -506,17 +504,15 @@ def open_examples_db(
         _validate_examples_meta(meta)
         if sqlite_vector_path is None:
             raise RuntimeError("sqlite-vector unavailable")
-        try:
-            kdedb.enable_sqlite_vector(conn, extension_path=sqlite_vector_path)
-            _initialize_vector_context(
-                conn,
-                embedding_dim=int(meta["embedding_dim"]),
-                embedding_distance=str(meta["embedding_distance"]),
-            )
-        except Exception as exc:
+        if not kdedb.try_enable_sqlite_vector(conn, extension_path=sqlite_vector_path):
             raise RuntimeError(
-                f"failed to load sqlite-vector extension at {sqlite_vector_path}: {exc}"
-            ) from exc
+                f"failed to load sqlite-vector extension at {sqlite_vector_path}"
+            )
+        _initialize_vector_context(
+            conn,
+            embedding_dim=int(meta["embedding_dim"]),
+            embedding_distance=str(meta["embedding_distance"]),
+        )
     except Exception:
         conn.close()
         raise

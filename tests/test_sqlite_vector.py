@@ -16,7 +16,11 @@ def test_sqlite_vector_extension_loads(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(project_root)
 
     db_path = tmp_path / "vector-test.sqlite"
-    conn = kdedb.get_db_connection(db_path)
+    conn = kdedb.connect_writable(db_path)
+    assert kdedb.try_enable_sqlite_vector(
+        conn,
+        extension_path=str(vector_path),
+    )
     try:
         conn.execute(
             "CREATE TABLE images (id INTEGER PRIMARY KEY, embedding BLOB, label TEXT)"

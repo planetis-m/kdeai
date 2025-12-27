@@ -11,6 +11,22 @@ from conftest import build_config
 from kdeai import apply
 from kdeai import locks
 from kdeai import plan
+from kdeai import po_utils
+
+
+def _entry_state_hash(entry, *, lang: str, config) -> str:
+    marker_flags, comment_prefixes, _review_prefix, _ai_prefix, ai_flag = (
+        po_utils.marker_settings_from_config(config)
+    )
+    marker_flags = list(marker_flags)
+    if ai_flag not in marker_flags:
+        marker_flags.append(ai_flag)
+    return apply.entry_state_hash(
+        entry,
+        lang=lang,
+        marker_flags=marker_flags,
+        comment_prefixes=comment_prefixes,
+    )
 
 
 class TestApplyStrictMode(unittest.TestCase):
@@ -37,7 +53,8 @@ class TestApplyStrictMode(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = {
@@ -106,7 +123,8 @@ class TestApplyStrictMode(unittest.TestCase):
 
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             entry.msgstr = "Alt"
             po_file.save(str(po_path))
@@ -270,7 +288,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -309,8 +328,10 @@ class TestApplyAdditionalCases(unittest.TestCase):
             po_file = polib.pofile(str(po_path))
             entry_file = po_file.find("File", msgctxt="menu")
             entry_edit = po_file.find("Edit", msgctxt="menu")
-            base_state_file = apply.entry_state_hash(entry_file, lang="de")
-            base_state_edit = apply.entry_state_hash(entry_edit, lang="de")
+            config = build_config()
+            base_state_file = _entry_state_hash(entry_file, lang="de", config=config)
+            config = build_config()
+            base_state_edit = _entry_state_hash(entry_edit, lang="de", config=config)
 
             config = build_config()
             plan_payload = {
@@ -385,7 +406,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("Hello %s", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config({"apply": {"validation_patterns": [r"%\w"]}})
 
             plan_payload = self._build_plan(
@@ -434,7 +456,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("Hello %s", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config({"apply": {"validation_patterns": [r"%\w"]}})
 
             plan_payload = self._build_plan(
@@ -504,7 +527,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -553,7 +577,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -610,7 +635,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
 
             base_bytes = po_path.read_bytes()
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -659,7 +685,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
 
             base_bytes = po_path.read_bytes()
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -708,7 +735,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
 
             base_bytes = po_path.read_bytes()
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -755,8 +783,10 @@ class TestApplyAdditionalCases(unittest.TestCase):
             po_file = polib.pofile(str(po_path))
             entry_file = po_file.find("File", msgctxt="menu")
             entry_edit = po_file.find("Edit", msgctxt="menu")
-            base_state_hash_file = apply.entry_state_hash(entry_file, lang="de")
-            base_state_hash_edit = apply.entry_state_hash(entry_edit, lang="de")
+            config = build_config()
+            base_state_hash_file = _entry_state_hash(entry_file, lang="de", config=config)
+            config = build_config()
+            base_state_hash_edit = _entry_state_hash(entry_edit, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -809,8 +839,10 @@ class TestApplyAdditionalCases(unittest.TestCase):
             po_file = polib.pofile(str(po_path))
             entry_file = po_file.find("File", msgctxt="menu")
             entry_edit = po_file.find("Edit", msgctxt="menu")
-            base_state_hash_file = apply.entry_state_hash(entry_file, lang="de")
-            base_state_hash_edit = apply.entry_state_hash(entry_edit, lang="de")
+            config = build_config()
+            base_state_hash_file = _entry_state_hash(entry_file, lang="de", config=config)
+            config = build_config()
+            base_state_hash_edit = _entry_state_hash(entry_edit, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -880,7 +912,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
 
                     base_bytes = po_path.read_bytes()
                     base_sha256 = hashlib.sha256(base_bytes).hexdigest()
-                    base_state_hash = apply.entry_state_hash(entry, lang="de")
+                    config = build_config()
+                    base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
                     plan_payload = self._build_plan(
                         file_path="locale/de.po",
@@ -934,7 +967,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -975,7 +1009,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -1036,7 +1071,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -1077,7 +1113,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -1126,7 +1163,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -1166,7 +1204,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = {
@@ -1229,7 +1268,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = {
@@ -1292,7 +1332,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
             config = build_config()
 
             plan_payload = self._build_plan(
@@ -1334,7 +1375,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1372,7 +1414,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1409,7 +1452,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1447,7 +1491,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1494,7 +1539,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = {
@@ -1551,7 +1597,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = {
@@ -1613,7 +1660,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1655,7 +1703,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1696,7 +1745,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1733,7 +1783,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1770,7 +1821,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1807,7 +1859,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             outside_path = (root.parent / "outside.po").resolve()
@@ -1848,7 +1901,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = self._build_plan(
@@ -1890,7 +1944,8 @@ class TestApplyAdditionalCases(unittest.TestCase):
             base_sha256 = hashlib.sha256(base_bytes).hexdigest()
             po_file = polib.pofile(str(po_path))
             entry = po_file.find("File", msgctxt="menu")
-            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
 
             config = build_config()
             plan_payload = {

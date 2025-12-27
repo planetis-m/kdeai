@@ -122,6 +122,10 @@ class PlanBuilder:
         skipped_overwrite = 0
         tm_entries = 0
         llm_entries = 0
+        marker_flags = list(self.marker_flags)
+        if self.ai_flag not in marker_flags:
+            marker_flags.append(self.ai_flag)
+        comment_prefixes = list(self.comment_prefixes)
 
         for entry in source_entries:
             if entry.obsolete or entry.msgid == "":
@@ -138,8 +142,8 @@ class PlanBuilder:
             base_state_hash = kdestate.entry_state_hash(
                 entry,
                 lang=self.lang,
-                marker_flags=self.marker_flags,
-                comment_prefixes=self.comment_prefixes,
+                marker_flags=marker_flags,
+                comment_prefixes=comment_prefixes,
             )
             source_key = po_model.source_key_for(msgctxt, msgid, msgid_plural)
             has_plural = bool(msgid_plural)

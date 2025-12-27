@@ -63,6 +63,10 @@ def open_examples_best_effort(
     db_path = pointer_path.parent / str(db_file)
     if not db_path.exists():
         return None
+    if sqlite_vector_path is None:
+        if required:
+            raise RuntimeError("examples required but sqlite-vector unavailable")
+        return None
     try:
         return kdeexamples.open_examples_db(
             db_path,

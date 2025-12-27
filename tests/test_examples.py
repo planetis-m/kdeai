@@ -458,7 +458,7 @@ class TestExamplesDb(unittest.TestCase):
             meta["vector_encoding"] = "float32"
             with (
                 mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch("kdeai.examples.kdedb.try_enable_sqlite_vector", return_value=True),
             ):
                 with self.assertRaises(ValueError):
                     examples.open_examples_db(
@@ -477,7 +477,7 @@ class TestExamplesDb(unittest.TestCase):
             meta["examples_scope"] = "foo"
             with (
                 mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch("kdeai.examples.kdedb.try_enable_sqlite_vector", return_value=True),
             ):
                 with self.assertRaises(ValueError):
                     examples.open_examples_db(
@@ -496,7 +496,7 @@ class TestExamplesDb(unittest.TestCase):
             meta["source_snapshot_kind"] = "bar"
             with (
                 mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch("kdeai.examples.kdedb.try_enable_sqlite_vector", return_value=True),
             ):
                 with self.assertRaises(ValueError):
                     examples.open_examples_db(
@@ -514,7 +514,7 @@ class TestExamplesDb(unittest.TestCase):
             meta = _example_meta()
             with (
                 mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch("kdeai.examples.kdedb.try_enable_sqlite_vector", return_value=True),
                 mock.patch("kdeai.examples._initialize_vector_context"),
             ):
                 db = examples.open_examples_db(
@@ -535,7 +535,7 @@ class TestExamplesDb(unittest.TestCase):
             meta["source_snapshot_id"] = ""
             with (
                 mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch("kdeai.examples.kdedb.try_enable_sqlite_vector", return_value=True),
             ):
                 with self.assertRaises(ValueError):
                     examples.open_examples_db(
@@ -551,7 +551,10 @@ class TestExamplesDb(unittest.TestCase):
             db_path = Path(tmpdir) / "examples.sqlite"
             _write_examples_meta_db(db_path)
             with (
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector") as enable_vector,
+                mock.patch(
+                    "kdeai.examples.kdedb.try_enable_sqlite_vector",
+                    return_value=True,
+                ) as enable_vector,
                 mock.patch("kdeai.examples._initialize_vector_context"),
             ):
                 db = examples.open_examples_db(
@@ -584,8 +587,8 @@ class TestExamplesDb(unittest.TestCase):
             db_path = Path(tmpdir) / "examples.sqlite"
             _write_examples_meta_db(db_path)
             with mock.patch(
-                "kdeai.examples.kdedb.enable_sqlite_vector",
-                side_effect=RuntimeError("boom"),
+                "kdeai.examples.kdedb.try_enable_sqlite_vector",
+                return_value=False,
             ):
                 with self.assertRaises(RuntimeError):
                     examples.open_examples_db(
@@ -619,7 +622,10 @@ class TestExamplesDb(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "examples.sqlite"
             with (
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector") as enable_vector,
+                mock.patch(
+                    "kdeai.examples.kdedb.try_enable_sqlite_vector",
+                    return_value=True,
+                ) as enable_vector,
                 mock.patch("kdeai.examples._create_vector_index") as create_index,
             ):
                 create_index.return_value = None
@@ -667,7 +673,7 @@ class TestExamplesDb(unittest.TestCase):
             output_path = Path(tmpdir) / "examples.sqlite"
             with (
                 mock.patch("kdeai.examples.kdedb.connect_writable", return_value=mock_conn),
-                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch("kdeai.examples.kdedb.try_enable_sqlite_vector", return_value=True),
                 mock.patch(
                     "kdeai.examples._create_vector_index",
                     side_effect=RuntimeError("boom"),
