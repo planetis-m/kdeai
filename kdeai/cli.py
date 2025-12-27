@@ -78,7 +78,6 @@ def _glossary_is_current(
     *,
     pointer_path: Path,
     reference_snapshot_id: int,
-    output_path: Path,
     project_id: str,
     config: Config,
 ) -> bool:
@@ -89,21 +88,26 @@ def _glossary_is_current(
         pointer = po_utils.read_json(pointer_path, pointer_path.name)
         db_file = str(pointer.get("db_file", ""))
         pointer_snapshot_id = int(pointer.get("snapshot_id", 0))
+        if not db_file or pointer_snapshot_id <= 0:
+            return False
         db_path = pointer_path.parent / db_file
-        if (
-            pointer_snapshot_id == reference_snapshot_id
-            and db_file == output_path.name
-            and db_path.exists()
-        ):
-            with closing(kdedb.connect_readonly(db_path)) as conn:
-                kdedb.validate_meta_table(
-                    conn,
-                    expected_project_id=project_id,
-                    expected_config_hash=config.config_hash,
-                    expected_kind=DbKind.GLOSSARY,
-                    expected_normalization_id=glossary_normalization_id(config),
-                )
-            return True
+        if not db_path.exists():
+            return False
+        with closing(kdedb.connect_readonly(db_path)) as conn:
+            meta = kdedb.validate_meta_table(
+                conn,
+                expected_project_id=project_id,
+                expected_config_hash=config.config_hash,
+                expected_kind=DbKind.GLOSSARY,
+                expected_normalization_id=glossary_normalization_id(config),
+            )
+        meta_snapshot_id = int(meta.get("snapshot_id", "0"))
+        source_snapshot_id = int(meta.get("source_snapshot_id", "0"))
+        if meta_snapshot_id != pointer_snapshot_id:
+            return False
+        if source_snapshot_id != reference_snapshot_id:
+            return False
+        return True
     except Exception:
         return False
 
@@ -764,35 +768,29 @@ def glossary_build(
     reference_snapshot_id = int(ref_pointer.get("snapshot_id", 0))
     reference_db_file = str(ref_pointer.get("db_file", ""))
     db_path = _cache_path(project_root, "reference", reference_db_file)
+    if skip_if_current and _glossary_is_current(
+        pointer_path=pointer_path,
+        reference_snapshot_id=reference_snapshot_id,
+        project_id=project_id,
+        config=config,
+    ):
+        typer.echo("Glossary cache already current.")
+        return
+    glossary_gen_id = _next_pointer_id(pointer_path, "snapshot_id")
+    output_path = _cache_path(
+        project_root,
+        "glossary",
+        f"glossary.{glossary_gen_id}.sqlite",
+    )
     try:
         with closing(kdedb.connect_readonly(db_path)) as reference_conn:
-            output_path = (
-                _cache_path(
-                    project_root,
-                    "glossary",
-                    f"glossary.{reference_snapshot_id}.sqlite",
-                )
-            )
-            if skip_if_current and _glossary_is_current(
-                pointer_path=pointer_path,
-                reference_snapshot_id=reference_snapshot_id,
-                output_path=output_path,
-                project_id=project_id,
-                config=config,
-            ):
-                typer.echo("Glossary cache already current.")
-                return
-            if output_path.exists():
-                _exit_with_error(
-                    "Glossary DB already exists for reference snapshot "
-                    f"{reference_snapshot_id}. Rebuild reference snapshot or use --skip-if-current."
-                )
             kdeglo.build_glossary_db(
                 reference_conn,
                 output_path=output_path,
                 config=config,
                 project_id=project_id,
                 config_hash=config.config_hash,
+                glossary_snapshot_id=glossary_gen_id,
             )
 
         with closing(kdedb.connect_readonly(output_path)) as conn:
@@ -811,7 +809,7 @@ def glossary_build(
         _exit_with_error(f"Glossary build failed: {exc}")
 
     pointer_payload = {
-        "snapshot_id": reference_snapshot_id,
+        "snapshot_id": glossary_gen_id,
         "db_file": output_path.name,
         "created_at": created_at,
         "source_snapshot": {

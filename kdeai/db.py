@@ -187,7 +187,7 @@ def connect_workspace_tm(
 
 
 def connect_readonly(path: Path, *, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
-    uri = f"file:{path}?mode=ro"
+    uri = f"file:{path.as_posix()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     if busy_timeout_ms is not None:
         _apply_pragma(conn, "busy_timeout", int(busy_timeout_ms))

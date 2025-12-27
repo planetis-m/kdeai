@@ -6,8 +6,8 @@ from pathlib import Path
 import types
 
 from conftest import build_config
-from kdeai.llm import batch_translate
-from kdeai.prompt import build_prompt_payload
+from kdeai.llm import batch_translate, build_prompt_payload as llm_build_prompt_payload
+from kdeai.prompt import build_prompt_payload as prompt_build_prompt_payload
 
 
 class _Example:
@@ -30,7 +30,7 @@ class _GlossaryMatch:
 
 
 def test_build_prompt_payload_includes_structured_fields() -> None:
-    payload = build_prompt_payload(
+    payload = prompt_build_prompt_payload(
         config=build_config({"languages": {"source": "en"}}),
         msgctxt=None,
         msgid="File",
@@ -40,14 +40,26 @@ def test_build_prompt_payload_includes_structured_fields() -> None:
         glossary=[_GlossaryMatch(_Term("File", "Datei"))],
     )
 
-    assert payload["source_context"] == ""
-    assert payload["source_text"] == "File"
-    assert payload["plural_text"] == ""
+    assert payload["source_text_v1"] == "ctx:\nid:File\npl:"
     assert payload["target_lang"] == "de"
     assert payload["glossary_context"] == "File -> Datei"
     assert "1. Source:" in payload["few_shot_examples"]
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][1]["role"] == "user"
+
+
+def test_llm_build_prompt_payload_uses_source_text_v1() -> None:
+    payload = llm_build_prompt_payload(
+        {
+            "msgctxt": "",
+            "msgid": "Save",
+            "msgid_plural": "",
+            "examples": [],
+            "glossary_terms": [],
+        },
+        target_lang="de",
+    )
+    assert payload["source_text_v1"] == "ctx:\nid:Save\npl:"
 
 
 def _load_env_if_missing(keys: list[str]) -> None:

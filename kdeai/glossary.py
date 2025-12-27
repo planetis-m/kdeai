@@ -129,6 +129,7 @@ def build_glossary_db(
     config: Config,
     project_id: str,
     config_hash: str,
+    glossary_snapshot_id: int,
 ) -> Path:
     normalizer = build_normalizer_from_config(config)
     meta = kdedb.read_meta(reference_conn)
@@ -143,9 +144,11 @@ def build_glossary_db(
     if not src_lang:
         raise ValueError("languages.source missing")
 
-    snapshot_id = int(meta.get("snapshot_id", "0"))
-    if snapshot_id <= 0:
+    source_snapshot_id = int(meta.get("snapshot_id", "0"))
+    if source_snapshot_id <= 0:
         raise ValueError("reference snapshot_id missing or invalid")
+    if glossary_snapshot_id <= 0:
+        raise ValueError("glossary snapshot_id missing or invalid")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
@@ -254,9 +257,9 @@ def build_glossary_db(
         "project_id": project_id,
         "config_hash": config_hash,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "snapshot_id": str(snapshot_id),
+        "snapshot_id": str(glossary_snapshot_id),
         "source_snapshot_kind": DbKind.REFERENCE_TM,
-        "source_snapshot_id": str(snapshot_id),
+        "source_snapshot_id": str(source_snapshot_id),
         "glossary_src_lang": src_lang,
         "tokenizer_id": f"spacy@{spacy.__version__}:{spacy_model_name}",
         "normalization_id": normalizer.normalization_id,

@@ -24,6 +24,8 @@ class TestConnectReadonly(unittest.TestCase):
                 self.assertEqual(query_only, 1)
                 with self.assertRaises(sqlite3.OperationalError):
                     ro_conn.execute("INSERT INTO items (name) VALUES ('two')")
+                with self.assertRaises(sqlite3.OperationalError):
+                    ro_conn.execute("CREATE TABLE other (id INTEGER PRIMARY KEY)")
             finally:
                 ro_conn.close()
 

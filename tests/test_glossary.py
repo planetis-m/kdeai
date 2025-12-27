@@ -261,12 +261,14 @@ class TestGlossaryMining(unittest.TestCase):
                 config=config,
                 project_id="project-1",
                 config_hash="config-1",
+                glossary_snapshot_id=42,
             )
 
             self.assertTrue(kdeglossary_path.exists())
             glossary_conn = sqlite3.connect(str(kdeglossary_path))
             meta = kdedb.read_meta(glossary_conn)
             self.assertEqual(meta["normalization_id"], kdeglo.NORMALIZATION_ID)
+            self.assertEqual(meta["snapshot_id"], "42")
 
             terms = kdeglo.load_terms(glossary_conn, src_lang="en", tgt_lang="el")
             term_by_surface = {term.src_surface: term for term in terms}

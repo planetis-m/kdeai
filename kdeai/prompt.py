@@ -6,9 +6,7 @@ from kdeai import hash as kdehash
 from kdeai.config import Config
 
 class PromptData(TypedDict):
-    source_context: str
-    source_text: str
-    plural_text: str
+    source_text_v1: str
     target_lang: str
     glossary_context: str
     few_shot_examples: str
@@ -222,9 +220,7 @@ def build_prompt_payload(
     )
 
     return {
-        "source_context": _normalize_field(msgctxt),
-        "source_text": msgid,
-        "plural_text": _normalize_field(msgid_plural),
+        "source_text_v1": source_text,
         "target_lang": target_lang,
         "glossary_context": _glossary_context(glossary),
         "few_shot_examples": _format_examples(examples),

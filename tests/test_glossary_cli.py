@@ -9,6 +9,7 @@ import spacy
 from typer.testing import CliRunner
 
 from conftest import build_config_dict
+from kdeai import db as kdedb
 from kdeai import glossary as kdeglo
 from kdeai import llm as kdellm
 from kdeai.cli import app
@@ -62,6 +63,22 @@ def _write_glossary_output(terms: list[kdeglo.GlossaryTerm], output_path: Path) 
     for term in sorted(terms, key=lambda item: item.src_surface.casefold()):
         lines.append(f"{term.src_surface} -> {term.tgt_primary}")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _read_pointer(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_glossary_meta(root: Path) -> dict[str, str]:
+    pointer_path = root / ".kdeai" / "cache" / "glossary" / "glossary.current.json"
+    payload = _read_pointer(pointer_path)
+    db_file = str(payload.get("db_file", ""))
+    glossary_path = pointer_path.parent / db_file
+    conn = sqlite3.connect(str(glossary_path))
+    try:
+        return kdedb.read_meta(conn)
+    finally:
+        conn.close()
 
 
 def test_glossary_build_from_playground2(monkeypatch, tmp_path: Path) -> None:
@@ -167,3 +184,47 @@ def test_translate_includes_glossary_in_prompt(monkeypatch, tmp_path: Path) -> N
     glossary_context = str(prompt.get("glossary_context", ""))
     assert "Close -> Κλείσιμο" in glossary_context
     assert "Documents -> Έγγραφα" in glossary_context
+
+
+def test_glossary_build_creates_new_generation(monkeypatch, tmp_path: Path) -> None:
+    try:
+        spacy.load("en_core_web_sm")
+    except OSError:
+        import pytest
+
+        pytest.skip("en_core_web_sm not installed; run: python -m spacy download en_core_web_sm")
+
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path)
+    _copy_fixture(tmp_path)
+
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+
+    result = runner.invoke(app, ["reference", "build", "tests/playground2"])
+    assert result.exit_code == 0
+
+    result = runner.invoke(app, ["glossary", "build"])
+    assert result.exit_code == 0
+
+    pointer_path = tmp_path / ".kdeai" / "cache" / "glossary" / "glossary.current.json"
+    first_pointer = _read_pointer(pointer_path)
+    first_snapshot_id = int(first_pointer.get("snapshot_id", 0))
+
+    result = runner.invoke(app, ["glossary", "build"])
+    assert result.exit_code == 0
+
+    reference_pointer = _read_pointer(
+        tmp_path / ".kdeai" / "cache" / "reference" / "reference.current.json"
+    )
+    reference_snapshot_id = int(reference_pointer.get("snapshot_id", 0))
+
+    second_pointer = _read_pointer(pointer_path)
+    second_snapshot_id = int(second_pointer.get("snapshot_id", 0))
+    assert second_snapshot_id == first_snapshot_id + 1
+    assert int(second_pointer.get("source_snapshot", {}).get("snapshot_id", 0)) == reference_snapshot_id
+
+    meta = _load_glossary_meta(tmp_path)
+    assert meta.get("snapshot_id") == str(second_snapshot_id)
+    assert meta.get("source_snapshot_id") == str(reference_snapshot_id)

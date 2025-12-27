@@ -6,14 +6,13 @@ import dspy
 
 from kdeai.config import Config
 from kdeai.constants import PlanAction
+from kdeai import po_model
 from kdeai import prompt as kdeprompt
 from kdeai.prompt import PromptData
 
 
 class TranslationSignature(dspy.Signature):
-    source_context: str = dspy.InputField(desc="msgctxt")
-    source_text: str = dspy.InputField(desc="msgid")
-    plural_text: str = dspy.InputField(desc="msgid_plural")
+    source_text_v1: str = dspy.InputField(desc="Canonical source text")
     target_lang: str = dspy.InputField(desc="Target language code")
     glossary_context: str = dspy.InputField(desc="Comma-separated glossary terms")
     few_shot_examples: str = dspy.InputField(desc="Retrieved TM examples")
@@ -53,9 +52,7 @@ def _normalize_prompt_data(prompt: Mapping[str, object]) -> dict[str, str]:
         return "" if value is None else str(value)
 
     return {
-        "source_context": _text(prompt.get("source_context")),
-        "source_text": _text(prompt.get("source_text")),
-        "plural_text": _text(prompt.get("plural_text")),
+        "source_text_v1": _text(prompt.get("source_text_v1")),
         "target_lang": _text(prompt.get("target_lang")),
         "glossary_context": _text(prompt.get("glossary_context")),
         "few_shot_examples": _text(prompt.get("few_shot_examples")),
@@ -82,10 +79,13 @@ def build_prompt_payload(
             return kdeprompt.glossary_context_from_dicts(matches)
         return _text(value)
 
+    source_text_v1 = po_model.source_text_v1(
+        str(entry.get("msgctxt", "")),
+        str(entry.get("msgid", "")),
+        str(entry.get("msgid_plural", "")),
+    )
     return {
-        "source_context": _text(entry.get("msgctxt", "")),
-        "source_text": _text(entry.get("msgid", "")),
-        "plural_text": _text(entry.get("msgid_plural", "")),
+        "source_text_v1": source_text_v1,
         "target_lang": _text(target_lang),
         "glossary_context": _glossary_context(entry.get("glossary_terms", "")),
         "few_shot_examples": _examples_context(entry.get("examples", "")),
