@@ -12,7 +12,7 @@ import sys
 import polib
 
 from kdeai import state as kdestate
-from kdeai.config import Config
+from kdeai.config import AssetMode, Config
 from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import hash as kdehash
@@ -42,7 +42,6 @@ class PlannerAssets:
     reference_conn: sqlite3.Connection | None
     examples_db: kdeexamples.ExamplesDb | None
     glossary_conn: sqlite3.Connection | None
-    glossary_terms: list[object]
     glossary_matcher: object | None
     examples_top_n: int
     glossary_max_terms: int
@@ -77,9 +76,8 @@ class PlanBuilder:
         config: Config,
         lang: str,
         cache: str = "on",
-        cache_write: str = "on",
-        examples_mode: str | None = None,
-        glossary_mode: str | None = None,
+        examples_mode: AssetMode | None = None,
+        glossary_mode: AssetMode | None = None,
         overwrite: str | None = None,
         session_tm: SessionTmView | None = None,
         embedder: EmbeddingFunc | None = None,
@@ -96,7 +94,6 @@ class PlanBuilder:
             self.ai_flag,
         ) = po_utils.marker_settings_from_config(config)
         self.selected_overwrite = str(overwrite or config.apply.overwrite_default)
-        self.cache_write = cache_write
         assets, effective_examples_mode, effective_glossary_mode = _build_assets(
             project_root=project_root,
             project_id=project_id,
@@ -150,6 +147,16 @@ class PlanBuilder:
             reviewed = po_utils.is_reviewed(entry, self.review_prefix)
             if not po_utils.can_overwrite(current_non_empty, reviewed, self.selected_overwrite):
                 skipped_overwrite += 1
+                entries_payload.append(
+                    {
+                        "msgctxt": msgctxt,
+                        "msgid": msgid,
+                        "msgid_plural": msgid_plural,
+                        "base_state_hash": base_state_hash,
+                        "action": PlanAction.SKIP,
+                        "skip_reason": "overwrite_policy",
+                    }
+                )
                 continue
             msgctxt = entry.msgctxt or ""
             msgid = entry.msgid
@@ -362,15 +369,6 @@ def _tm_tags_and_comments(
     return flags, comments
 
 
-def _examples_settings(config: Config) -> tuple[list[str], int, str]:
-    examples_cfg = config.prompt.examples
-    return (
-        list(examples_cfg.lookup_scopes),
-        int(examples_cfg.top_n),
-        str(examples_cfg.mode_default),
-    )
-
-
 def _glossary_settings(config: Config) -> tuple[list[str], int, str, str]:
     glossary_cfg = config.prompt.glossary
     return (
@@ -487,11 +485,11 @@ def _build_assets(
     config: Config,
     lang: str,
     cache: str,
-    examples_mode: str | None,
-    glossary_mode: str | None,
+    examples_mode: AssetMode | None,
+    glossary_mode: AssetMode | None,
     embedder: EmbeddingFunc | None,
     sqlite_vector_path: str | None,
-) -> tuple[PlannerAssets, str, str]:
+) -> tuple[PlannerAssets, AssetMode, AssetMode]:
     config_hash = config.config_hash
     embed_policy_hash = config.embed_policy_hash
     if cache == "off":
@@ -508,9 +506,13 @@ def _build_assets(
             project_root, project_id=project_id, config_hash=config_hash
         )
 
-    examples_scopes, examples_top_n, examples_default = _examples_settings(config)
+    examples_scopes, examples_top_n, examples_default, _eligibility = (
+        config.examples_runtime_settings()
+    )
     if examples_mode is None:
         examples_mode = examples_default
+    if examples_mode not in {"off", "auto", "required"}:
+        raise ValueError(f"unsupported examples mode: {examples_mode}")
 
     if examples_mode == "required":
         if embedder is None:
@@ -542,8 +544,9 @@ def _build_assets(
     )
     if glossary_mode is None:
         glossary_mode = glossary_default
+    if glossary_mode not in {"off", "auto", "required"}:
+        raise ValueError(f"unsupported glossary mode: {glossary_mode}")
 
-    glossary_terms: list[object] = []
     glossary_matcher: object | None = None
     glossary_conn = None
     if glossary_mode != "off" and cache != "off":
@@ -570,7 +573,6 @@ def _build_assets(
             glossary_conn = None
             if glossary_mode == "required":
                 raise
-            glossary_terms = []
             glossary_matcher = None
     elif glossary_mode == "required":
         raise ValueError("glossary required but unavailable")
@@ -581,13 +583,12 @@ def _build_assets(
             reference_conn=reference_conn,
             examples_db=examples_db if embedder is not None else None,
             glossary_conn=glossary_conn,
-            glossary_terms=glossary_terms,
             glossary_matcher=glossary_matcher,
             examples_top_n=examples_top_n,
             glossary_max_terms=glossary_max_terms,
         ),
-        str(examples_mode),
-        str(glossary_mode),
+        examples_mode,
+        glossary_mode,
     )
 
 

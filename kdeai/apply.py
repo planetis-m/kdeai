@@ -496,12 +496,14 @@ def apply_plan_to_file(
                 file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
             return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
         action = str(entry_item.get("action", ""))
-        if action not in {PlanAction.COPY_TM, PlanAction.LLM}:
+        if action not in {PlanAction.COPY_TM, PlanAction.LLM, PlanAction.SKIP}:
             if action:
                 file_errors.append(f"{file_path}: unsupported action: {action}")
             else:
                 file_errors.append(f"{file_path}: unsupported action: missing")
             return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
+        if action == PlanAction.SKIP:
+            continue
         key = (
             str(entry_item.get("msgctxt", "")),
             str(entry_item.get("msgid", "")),
@@ -665,7 +667,7 @@ def apply_plan(
     defaults = plan.get("apply_defaults") if isinstance(plan, Mapping) else None
     defaults = defaults if isinstance(defaults, Mapping) else {}
 
-    selected_mode = str(apply_mode or defaults.get("mode") or "strict")
+    selected_mode = str(apply_mode or defaults.get("apply_mode") or defaults.get("mode") or "strict")
     selected_overwrite = str(overwrite or defaults.get("overwrite") or "conservative")
     if post_index is None:
         post_index_setting = str(defaults.get("post_index") or "off")

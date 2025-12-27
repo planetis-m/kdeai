@@ -164,10 +164,10 @@ def _glossary_normalization_id(config: Config) -> str:
     return str(config.prompt.glossary.normalization_id or kdeglo.NORMALIZATION_ID)
 
 
-def _apply_defaults_from_config(config: Config) -> dict:
+def _apply_defaults_from_config(config: Config, *, overwrite_default: str | None = None) -> dict:
     return {
-        "mode": str(config.apply.mode_default),
-        "overwrite": str(config.apply.overwrite_default),
+        "apply_mode": str(config.apply.mode_default),
+        "overwrite": str(overwrite_default or config.apply.overwrite_default),
         "post_index": "off",
     }
 
@@ -221,7 +221,7 @@ def _build_plan_header(
         "ai_flag": builder.ai_flag,
         "placeholder_patterns": list(config.apply.validation_patterns),
         "apply_defaults": {
-            "mode": str(apply_defaults.get("mode", "strict")),
+            "apply_mode": str(apply_defaults.get("apply_mode", "strict")),
             "overwrite": str(apply_defaults.get("overwrite", "conservative")),
             "post_index": str(apply_defaults.get("post_index", "off")),
         },
@@ -326,7 +326,6 @@ def plan(
         config=config,
         lang=lang,
         cache=cache_mode,
-        cache_write=cache_write_flag,
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         embedder=embedder,
@@ -348,7 +347,10 @@ def plan(
             )
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
-        apply_cfg = _apply_defaults_from_config(config)
+        apply_cfg = _apply_defaults_from_config(
+            config,
+            overwrite_default=builder.selected_overwrite,
+        )
         plan_payload = _build_plan_header(
             project=project,
             lang=lang,
@@ -467,7 +469,7 @@ def translate(
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
-    apply_defaults = _apply_defaults_from_config(config)
+    apply_defaults = _apply_defaults_from_config(config, overwrite_default=overwrite)
     post_index_flag = apply_defaults.get("post_index") == "on"
     if cache_mode == "off" or cache_write_flag == "off":
         post_index_flag = False
@@ -478,7 +480,6 @@ def translate(
         config=config,
         lang=lang,
         cache=cache_mode,
-        cache_write=cache_write_flag,
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         overwrite=overwrite,

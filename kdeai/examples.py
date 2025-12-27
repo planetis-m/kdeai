@@ -10,13 +10,14 @@ import sqlite3
 import sys
 
 from kdeai import db as kdedb
-from kdeai.config import Config, ExamplesEligibility
+from kdeai.config import Config
 from kdeai.constants import (
     DbKind,
     EXAMPLES_SCHEMA_VERSION,
     ReviewStatus,
     TmScope,
 )
+from kdeai import po_model
 from kdeai.po_utils import parse_msgstr_plural
 
 
@@ -81,15 +82,6 @@ class PendingExample:
     file_sha256: str
 
 
-def _examples_settings(config: Config) -> tuple[list[str], str, bool]:
-    examples = config.prompt.examples
-    eligibility = examples.eligibility
-    review_status_order = list(config.tm.selection.review_status_order)
-    min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
-    allow_ai_generated = bool(eligibility.allow_ai_generated)
-    return review_status_order, min_review_status, allow_ai_generated
-
-
 def _is_non_empty(msgstr: str, msgstr_plural: Mapping[str, str], has_plural: bool) -> bool:
     if has_plural:
         return any(str(value).strip() for value in msgstr_plural.values())
@@ -113,9 +105,22 @@ def _review_eligible(
     return candidate_rank <= order_rank[min_review_status]
 
 
+def _parse_source_text_v1(value: str) -> tuple[str, str, str] | None:
+    lines = value.splitlines()
+    if len(lines) != 3:
+        return None
+    if not lines[0].startswith("ctx:"):
+        return None
+    if not lines[1].startswith("id:"):
+        return None
+    if not lines[2].startswith("pl:"):
+        return None
+    return lines[0][4:], lines[1][3:], lines[2][3:]
+
+
 def _iter_workspace_rows(conn: sqlite3.Connection, lang: str):
     query = (
-        "SELECT s.source_key, s.source_text, s.msgid_plural, "
+        "SELECT s.source_key, s.msgctxt, s.msgid, s.msgid_plural, "
         "t.lang, t.msgstr, t.msgstr_plural, t.review_status, t.is_ai_generated, "
         "t.translation_hash, t.file_path "
         "FROM sources s "
@@ -128,7 +133,7 @@ def _iter_workspace_rows(conn: sqlite3.Connection, lang: str):
 
 def _iter_reference_rows(conn: sqlite3.Connection, lang: str):
     query = (
-        "SELECT s.source_key, s.source_text, s.msgid_plural, "
+        "SELECT s.source_key, s.msgctxt, s.msgid, s.msgid_plural, "
         "t.lang, t.msgstr, t.msgstr_plural, t.review_status, t.is_ai_generated, "
         "t.translation_hash, t.file_path, t.file_sha256 "
         "FROM sources s "
@@ -184,19 +189,47 @@ def _build_examples_rows(
     require_finite: bool,
     include_file_sha256: bool,
 ) -> list[ExampleRow]:
-    review_order, min_review_status, allow_ai_generated = _examples_settings(config)
+    review_order = list(config.tm.selection.review_status_order)
+    _, _, _, eligibility = config.examples_runtime_settings()
+    min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
+    allow_ai_generated = bool(eligibility.allow_ai_generated)
     candidates: list[PendingExample] = []
     for row in rows:
         source_key = str(row[0])
-        source_text = str(row[1])
-        msgid_plural = str(row[2])
-        msgstr = str(row[4])
-        msgstr_plural = str(row[5])
-        review_status = str(row[6])
-        is_ai_generated = int(row[7])
-        translation_hash = str(row[8])
-        file_path = str(row[9])
-        file_sha256 = str(row[10]) if include_file_sha256 else ""
+        msgctxt = ""
+        msgid = ""
+        msgid_plural = ""
+        msgstr = ""
+        msgstr_plural = ""
+        review_status = ""
+        is_ai_generated = 0
+        translation_hash = ""
+        file_path = ""
+        file_sha256 = ""
+        source_text_v1 = _parse_source_text_v1(str(row[1]))
+        if source_text_v1 is not None:
+            msgctxt, msgid, msgid_plural = source_text_v1
+            msgstr = str(row[4])
+            msgstr_plural = str(row[5])
+            review_status = str(row[6])
+            is_ai_generated = int(row[7])
+            translation_hash = str(row[8])
+            file_path = str(row[9])
+            if include_file_sha256:
+                file_sha256 = str(row[10])
+        else:
+            msgctxt = str(row[1])
+            msgid = str(row[2])
+            msgid_plural = str(row[3])
+            msgstr = str(row[5])
+            msgstr_plural = str(row[6])
+            review_status = str(row[7])
+            is_ai_generated = int(row[8])
+            translation_hash = str(row[9])
+            file_path = str(row[10])
+            if include_file_sha256:
+                file_sha256 = str(row[11])
+        source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
 
         if not source_text.strip():
             continue

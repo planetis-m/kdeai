@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, Strict
 
 OverwritePolicy = Literal["conservative", "allow-nonempty", "allow-reviewed", "all"]
 TmScope = Literal["session", "workspace", "reference"]
+ExamplesScope = Literal["workspace", "reference"]
+GlossaryScope = Literal["reference"]
 AssetMode = Literal["off", "auto", "required"]
 ApplyMode = Literal["strict", "rebase"]
 ReviewStatus = Literal["reviewed", "draft", "needs_review", "unreviewed"]
@@ -70,13 +72,13 @@ class EmbeddingPolicy(_BaseModel):
 
 
 class ExamplesEligibility(_BaseModel):
-    min_review_status: StrictStr
+    min_review_status: ReviewStatus
     allow_ai_generated: StrictBool
 
 
 class ExamplesConfig(_BaseModel):
     mode_default: AssetMode
-    lookup_scopes: list[TmScope]
+    lookup_scopes: list[ExamplesScope]
     top_n: StrictInt = Field(gt=0)
     embedding_policy: EmbeddingPolicy
     eligibility: ExamplesEligibility
@@ -84,7 +86,7 @@ class ExamplesConfig(_BaseModel):
 
 class GlossaryConfig(_BaseModel):
     mode_default: AssetMode
-    lookup_scopes: list[TmScope]
+    lookup_scopes: list[GlossaryScope]
     spacy_model: StrictStr
     normalization_id: StrictStr
     max_terms: StrictInt = Field(gt=0)
@@ -169,8 +171,27 @@ class Config(_BaseModel):
     def model_post_init(self, __context: object) -> None:
         data = self.model_dump(mode="json", exclude={"config_hash", "embed_policy_hash"})
         self.config_hash = compute_canonical_hash(data)
-        policy = self.prompt.examples.embedding_policy.model_dump(mode="json")
+        policy = {
+            "model_id": self.prompt.examples.embedding_policy.model_id,
+            "dim": self.prompt.examples.embedding_policy.dim,
+            "distance": self.prompt.examples.embedding_policy.distance,
+            "encoding": self.prompt.examples.embedding_policy.encoding,
+            "input_canonicalization": self.prompt.examples.embedding_policy.input_canonicalization,
+            "normalization": self.prompt.examples.embedding_policy.normalization,
+            "require_finite": self.prompt.examples.embedding_policy.require_finite,
+        }
         self.embed_policy_hash = compute_canonical_hash(policy)
+
+    def examples_runtime_settings(
+        self,
+    ) -> tuple[list[str], int, str, ExamplesEligibility]:
+        examples = self.prompt.examples
+        return (
+            list(examples.lookup_scopes),
+            int(examples.top_n),
+            str(examples.mode_default),
+            examples.eligibility,
+        )
 
     @property
     def data(self) -> dict:

@@ -32,6 +32,7 @@ class PlanAction:
 
     COPY_TM = "copy_tm"
     LLM = "llm"
+    SKIP = "skip"
 
 
 # Schema versions
