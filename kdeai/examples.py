@@ -290,13 +290,6 @@ def _initialize_vector_context(
     )
 
 
-def _examples_table_exists(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'examples'"
-    ).fetchone()
-    return row is not None
-
-
 def _build_examples_db(
     rows: Iterable[Sequence[object]],
     *,
@@ -515,12 +508,11 @@ def open_examples_db(
             raise RuntimeError("sqlite-vector unavailable")
         try:
             kdedb.enable_sqlite_vector(conn, extension_path=sqlite_vector_path)
-            if _examples_table_exists(conn):
-                _initialize_vector_context(
-                    conn,
-                    embedding_dim=int(meta["embedding_dim"]),
-                    embedding_distance=str(meta["embedding_distance"]),
-                )
+            _initialize_vector_context(
+                conn,
+                embedding_dim=int(meta["embedding_dim"]),
+                embedding_distance=str(meta["embedding_distance"]),
+            )
         except Exception as exc:
             raise RuntimeError(
                 f"failed to load sqlite-vector extension at {sqlite_vector_path}: {exc}"

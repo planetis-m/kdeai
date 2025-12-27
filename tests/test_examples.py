@@ -515,6 +515,7 @@ class TestExamplesDb(unittest.TestCase):
             with (
                 mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
                 mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch("kdeai.examples._initialize_vector_context"),
             ):
                 db = examples.open_examples_db(
                     db_path,
@@ -551,6 +552,7 @@ class TestExamplesDb(unittest.TestCase):
             _write_examples_meta_db(db_path)
             with (
                 mock.patch("kdeai.examples.kdedb.enable_sqlite_vector") as enable_vector,
+                mock.patch("kdeai.examples._initialize_vector_context"),
             ):
                 db = examples.open_examples_db(
                     db_path,
