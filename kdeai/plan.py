@@ -19,7 +19,6 @@ from kdeai import hash as kdehash
 from kdeai import locks
 from kdeai import po_utils
 from kdeai import po_model
-from kdeai import prompt as kdeprompt
 from kdeai import retrieve_examples
 from kdeai import retrieve_tm
 from kdeai import snapshot
@@ -34,6 +33,47 @@ EmbeddingFunc = Callable[[Sequence[str]], Sequence[Sequence[float]]]
 
 if TYPE_CHECKING:
     from kdeai import glossary as kdeglo
+
+
+def _examples_payload(
+    examples: Sequence[kdeexamples.ExampleMatch],
+) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    for example in examples:
+        msgstr_plural = getattr(example, "msgstr_plural", {})
+        if isinstance(msgstr_plural, Mapping):
+            normalized_plural = {str(k): str(v) for k, v in msgstr_plural.items()}
+        else:
+            normalized_plural = {}
+        payload.append(
+            {
+                "source_text": str(getattr(example, "source_text", "")),
+                "msgstr": str(getattr(example, "msgstr", "")),
+                "msgstr_plural": normalized_plural,
+            }
+        )
+    return payload
+
+
+def _glossary_terms_payload(glossary: Sequence[object]) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    for match in glossary:
+        term = getattr(match, "term", None)
+        if term is None:
+            continue
+        alternates = getattr(term, "tgt_alternates", [])
+        if isinstance(alternates, Sequence) and not isinstance(alternates, (str, bytes)):
+            alt_values = [str(value) for value in alternates if str(value).strip()]
+        else:
+            alt_values = []
+        payload.append(
+            {
+                "src_surface": str(getattr(term, "src_surface", "")),
+                "tgt_primary": str(getattr(term, "tgt_primary", "")),
+                "tgt_alternates": alt_values,
+            }
+        )
+    return payload
 
 
 @dataclass(frozen=True)
@@ -198,8 +238,8 @@ class PlanBuilder:
                     "action": PlanAction.LLM,
                     "tag_profile": "llm",
                     "translation": {"msgstr": "", "msgstr_plural": {}},
-                    "examples": kdeprompt.examples_context(examples),
-                    "glossary_terms": kdeprompt.glossary_context(glossary_matches),
+                    "examples": _examples_payload(examples),
+                    "glossary_terms": _glossary_terms_payload(glossary_matches),
                 }
             )
             llm_entries += 1

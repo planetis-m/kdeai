@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import Iterable, Mapping, MutableMapping, TypedDict
+from typing import Iterable, Mapping, MutableMapping, Sequence, TypedDict
+import types
 
 import dspy
 
 from kdeai.config import Config
 from kdeai.constants import PlanAction
 from kdeai.llm_provider import configure_dspy
+from kdeai import prompt as kdeprompt
 from kdeai.prompt import PromptData
 
 
@@ -39,6 +41,8 @@ class PlanEntry(TypedDict, total=False):
     msgid: str
     msgid_plural: str
     action: str
+    examples: Sequence[Mapping[str, object]]
+    glossary_terms: Sequence[Mapping[str, object]]
     translation: Mapping[str, object]
     tag_profile: str
 
@@ -68,13 +72,44 @@ def build_prompt_payload(
     def _text(value: object) -> str:
         return "" if value is None else str(value)
 
+    def _examples_context(value: object) -> str:
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            example_objs = []
+            for item in value:
+                if not isinstance(item, Mapping):
+                    continue
+                example_objs.append(
+                    types.SimpleNamespace(
+                        source_text=str(item.get("source_text", "")),
+                        msgstr=str(item.get("msgstr", "")),
+                        msgstr_plural=item.get("msgstr_plural", {}),
+                    )
+                )
+            return kdeprompt.examples_context(example_objs)
+        return _text(value)
+
+    def _glossary_context(value: object) -> str:
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            matches = []
+            for item in value:
+                if not isinstance(item, Mapping):
+                    continue
+                term = types.SimpleNamespace(
+                    src_surface=str(item.get("src_surface", "")),
+                    tgt_primary=str(item.get("tgt_primary", "")),
+                    tgt_alternates=item.get("tgt_alternates", []),
+                )
+                matches.append(types.SimpleNamespace(term=term))
+            return kdeprompt.glossary_context(matches)
+        return _text(value)
+
     return {
         "source_context": _text(entry.get("msgctxt", "")),
         "source_text": _text(entry.get("msgid", "")),
         "plural_text": _text(entry.get("msgid_plural", "")),
         "target_lang": _text(target_lang),
-        "glossary_context": _text(entry.get("glossary_terms", "")),
-        "few_shot_examples": _text(entry.get("examples", "")),
+        "glossary_context": _glossary_context(entry.get("glossary_terms", "")),
+        "few_shot_examples": _examples_context(entry.get("examples", "")),
     }
 
 

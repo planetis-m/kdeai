@@ -167,12 +167,12 @@ def test_batch_translate_adds_tags_for_needs_llm() -> None:
                 "entries": [
                         {
                             "msgctxt": "",
-                            "msgid": "Save",
-                            "msgid_plural": "",
-                            "action": "llm",
-                            "examples": "ctx:\\nid:Save\\npl:",
-                            "glossary_terms": "Save -> Speichern",
-                        }
+                    "msgid": "Save",
+                    "msgid_plural": "",
+                    "action": "llm",
+                    "examples": [{"source_text": "ctx:\nid:Save\npl:", "msgstr": "Speichern", "msgstr_plural": {}}],
+                    "glossary_terms": [{"src_surface": "Save", "tgt_primary": "Speichern", "tgt_alternates": []}],
+                }
                     ],
                 }
             ],

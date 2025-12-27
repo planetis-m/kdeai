@@ -126,26 +126,10 @@ def test_translate_includes_glossary_in_prompt(monkeypatch, tmp_path: Path) -> N
         for entry in entries:
             if entry.get("action") != "llm":
                 continue
-            prompt = entry.get("prompt") or {}
-            if not prompt:
-                prompt = {
-                    "few_shot_examples": entry.get("examples", ""),
-                    "glossary_context": entry.get("glossary_terms", ""),
-                }
-                glossary_context = str(prompt.get("glossary_context", ""))
-                if glossary_context:
-                    formatted_terms = [
-                        f"- {term.strip()}"
-                        for term in glossary_context.split(",")
-                        if term.strip()
-                    ]
-                    glossary_block = "\n".join(formatted_terms)
-                    prompt["messages"] = [
-                        {"role": "user", "content": f"Glossary:\n{glossary_block}"}
-                    ]
-                else:
-                    prompt["messages"] = []
-                entry["prompt"] = prompt
+            prompt = kdellm.build_prompt_payload(
+                entry,
+                target_lang=str(_kwargs.get("target_lang", "")),
+            )
             if entry.get("msgid") == "Middle Click To Close Documents":
                 captured["prompt"] = prompt
             msgid_plural = str(entry.get("msgid_plural", ""))
@@ -183,12 +167,3 @@ def test_translate_includes_glossary_in_prompt(monkeypatch, tmp_path: Path) -> N
     glossary_context = str(prompt.get("glossary_context", ""))
     assert "Close -> Κλείσιμο" in glossary_context
     assert "Documents -> Έγγραφα" in glossary_context
-
-    user_prompt = ""
-    for message in prompt.get("messages", []):
-        if message.get("role") == "user":
-            user_prompt = str(message.get("content", ""))
-            break
-    assert "Glossary:" in user_prompt
-    assert "- Close -> Κλείσιμο" in user_prompt
-    assert "- Documents -> Έγγραφα" in user_prompt

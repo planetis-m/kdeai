@@ -247,13 +247,10 @@ def test_translate_adds_examples_to_prompt(monkeypatch, tmp_path: Path) -> None:
             if entry.get("action") != "llm":
                 continue
             llm_entries += 1
-            prompt = entry.get("prompt") or {}
-            if not prompt:
-                prompt = {
-                    "few_shot_examples": entry.get("examples", ""),
-                    "glossary_context": entry.get("glossary_terms", ""),
-                }
-                entry["prompt"] = prompt
+            prompt = kdellm.build_prompt_payload(
+                entry,
+                target_lang=str(_kwargs.get("target_lang", "")),
+            )
             few_shot = prompt.get("few_shot_examples", "")
             if isinstance(few_shot, str) and "1. Source:" in few_shot:
                 examples_seen += 1
