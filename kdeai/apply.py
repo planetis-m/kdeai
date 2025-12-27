@@ -358,27 +358,16 @@ def _validate_plan_entry(entry_item: object) -> list[str]:
     return errors
 
 
-def apply_plan_to_file(
+def _phase1_validate_and_filter(
     file_path: str,
     plan_items: list,
     *,
     ctx: ApplyContext,
-    config: Config,
-    model_id: str,
-    full_path: Path,
-    lock_path: Path,
-    base_sha256: str,
-) -> ApplyFileResult:
-    marker_flags = list(ctx.marker_flags)
-    comment_prefixes = list(ctx.comment_prefixes)
-
-    file_warnings: list[str] = []
-    phase_a = snapshot.locked_read_file(full_path, lock_path, relpath=file_path)
-    if ctx.mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
-        file_warnings.append(f"{file_path}: skipped (strict): base_sha256 mismatch")
-        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
-
-    po_file = po_model.load_po_from_bytes(phase_a.bytes)
+    po_file: polib.POFile,
+    marker_flags: list[str],
+    comment_prefixes: list[str],
+    file_warnings: list[str],
+) -> tuple[ApplyFileResult | None, list[tuple[Mapping[str, object], polib.POEntry, str]]]:
     entry_map: dict[tuple[str, str, str], polib.POEntry] = {}
     duplicate_keys: list[tuple[str, str, str]] = []
     for entry in po_file:
@@ -394,7 +383,7 @@ def apply_plan_to_file(
         file_errors = [
             f"{file_path}: duplicate entry key: msgctxt={key[0]!r} msgid={key[1]!r} msgid_plural={key[2]!r}"
         ]
-        return ApplyFileResult(file_path, False, True, 0, file_errors, [], [])
+        return ApplyFileResult(file_path, False, True, 0, file_errors, [], []), []
 
     file_errors: list[str] = []
     to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
@@ -405,14 +394,14 @@ def apply_plan_to_file(
         if entry_errors:
             for error in entry_errors:
                 file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
-            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
+            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
         action = str(entry_item.get("action", ""))
         if action not in {PlanAction.COPY_TM, PlanAction.LLM, PlanAction.SKIP}:
             if action:
                 file_errors.append(f"{file_path}: unsupported action: {action}")
             else:
                 file_errors.append(f"{file_path}: unsupported action: missing")
-            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
+            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
         if action == PlanAction.SKIP:
             continue
         key = (
@@ -446,9 +435,9 @@ def apply_plan_to_file(
         if ctx.mode == "strict":
             reason = mismatch_reason or "entry state mismatch"
             file_warnings.append(f"{file_path}: skipped (strict): {reason}")
-        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
+        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, []), []
 
-    # Filter to entries that pass overwrite policy
+    # Filter to entries that pass overwrite policy.
     applicable: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     for entry_item, entry, action in to_apply:
         current_non_empty = po_utils.is_translation_non_empty(
@@ -460,8 +449,6 @@ def apply_plan_to_file(
         if _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
             applicable.append((entry_item, entry, action))
 
-    applied_entries: list[polib.POEntry] = []
-    applied_in_file = 0
     plural_forms = po_file.metadata.get("Plural-Forms")
     for entry_item, entry, action in applicable:
         translation = entry_item.get("translation")
@@ -480,8 +467,19 @@ def apply_plan_to_file(
             break
 
     if file_errors:
-        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
+        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
 
+    return None, applicable
+
+
+def _phase2_apply_mutations(
+    applicable: list[tuple[Mapping[str, object], polib.POEntry, str]],
+    *,
+    config: Config,
+    model_id: str,
+) -> tuple[list[polib.POEntry], int]:
+    applied_entries: list[polib.POEntry] = []
+    applied_in_file = 0
     for entry_item, entry, action in applicable:
         translation = entry_item.get("translation")
         msgstr = translation.get("msgstr", "")
@@ -511,10 +509,20 @@ def apply_plan_to_file(
 
         applied_in_file += 1
         applied_entries.append(entry)
+    return applied_entries, applied_in_file
 
-    if applied_in_file == 0:
-        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
+def _phase3_atomic_commit(
+    file_path: str,
+    *,
+    po_file: polib.POFile,
+    full_path: Path,
+    lock_path: Path,
+    phase_a_sha256: str,
+    file_warnings: list[str],
+    applied_in_file: int,
+    applied_entries: list[polib.POEntry],
+) -> ApplyFileResult:
     tmp_handle = tempfile.NamedTemporaryFile(
         dir=str(full_path.parent),
         suffix=".po",
@@ -537,7 +545,7 @@ def apply_plan_to_file(
         with locks.acquire_file_lock(lock_path):
             current_bytes = full_path.read_bytes()
             current_sha = hashlib.sha256(current_bytes).hexdigest()
-            if current_sha != phase_a.sha256:
+            if current_sha != phase_a_sha256:
                 file_warnings.append(f"{file_path}: skipped: file changed since phase A")
                 result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
             else:
@@ -553,6 +561,60 @@ def apply_plan_to_file(
         raise
 
     return ApplyFileResult(file_path, True, False, applied_in_file, [], file_warnings, applied_entries)
+
+
+def apply_plan_to_file(
+    file_path: str,
+    plan_items: list,
+    *,
+    ctx: ApplyContext,
+    config: Config,
+    model_id: str,
+    full_path: Path,
+    lock_path: Path,
+    base_sha256: str,
+) -> ApplyFileResult:
+    marker_flags = list(ctx.marker_flags)
+    comment_prefixes = list(ctx.comment_prefixes)
+
+    file_warnings: list[str] = []
+    phase_a = snapshot.locked_read_file(full_path, lock_path, relpath=file_path)
+    if ctx.mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
+        file_warnings.append(f"{file_path}: skipped (strict): base_sha256 mismatch")
+        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
+
+    po_file = po_model.load_po_from_bytes(phase_a.bytes)
+    phase1_result, applicable = _phase1_validate_and_filter(
+        file_path,
+        plan_items,
+        ctx=ctx,
+        po_file=po_file,
+        marker_flags=marker_flags,
+        comment_prefixes=comment_prefixes,
+        file_warnings=file_warnings,
+    )
+    if phase1_result is not None:
+        return phase1_result
+
+    applied_entries, applied_in_file = _phase2_apply_mutations(
+        applicable,
+        config=config,
+        model_id=model_id,
+    )
+
+    if applied_in_file == 0:
+        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
+
+    return _phase3_atomic_commit(
+        file_path,
+        po_file=po_file,
+        full_path=full_path,
+        lock_path=lock_path,
+        phase_a_sha256=phase_a.sha256,
+        file_warnings=file_warnings,
+        applied_in_file=applied_in_file,
+        applied_entries=applied_entries,
+    )
 
 
 def apply_plan(

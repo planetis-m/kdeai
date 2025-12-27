@@ -71,32 +71,6 @@ def _normalize_relpath(project_root: Path, path: Path) -> str:
     return relpath.as_posix()
 
 
-def _iter_po_paths(project_root: Path, raw_paths: Optional[list[Path]]) -> list[Path]:
-    roots = raw_paths if raw_paths else [project_root]
-    seen: set[Path] = set()
-    results: list[Path] = []
-
-    for raw in roots:
-        full = raw if raw.is_absolute() else project_root / raw
-        if not full.exists():
-            continue
-        if full.is_file():
-            candidates = [full]
-        else:
-            candidates = list(full.rglob("*.po"))
-        for candidate in candidates:
-            if candidate.suffix.lower() != ".po":
-                continue
-            if any(part in {".kdeai", ".git"} for part in candidate.parts):
-                continue
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            results.append(resolved)
-    return results
-
-
 def _lang_from_po(po_file: polib.POFile, config: Config) -> str:
     language = po_file.metadata.get("Language") if po_file else None
     if language:
@@ -166,7 +140,7 @@ def build_reference_snapshot(
         "translation_hash=excluded.translation_hash"
     )
 
-    for path in _iter_po_paths(project_root, paths):
+    for path in po_utils.iter_po_paths(project_root, paths):
         relpath = _normalize_relpath(project_root, path)
         relpath_key = relpath.casefold() if path_casefold else relpath
         lock_path = locks.per_file_lock_path(

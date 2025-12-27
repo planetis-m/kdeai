@@ -140,10 +140,16 @@ def marker_settings_from_config(config: Config) -> tuple[list[str], list[str], s
     return DEFAULT_MARKER_FLAGS, ordered, prefixes.review, prefixes.ai, config.markers.ai_flag
 
 
-def iter_po_paths(project_root: Path, raw_paths: Optional[list[Path]]) -> list[Path]:
+def iter_po_paths(
+    project_root: Path,
+    raw_paths: Optional[list[Path]],
+    *,
+    excluded_dirnames: Iterable[str] | None = None,
+) -> list[Path]:
     roots = raw_paths if raw_paths else [project_root]
     seen: set[Path] = set()
     results: list[Path] = []
+    excluded = set(excluded_dirnames or {".kdeai", ".git"})
 
     for raw in roots:
         full = raw if raw.is_absolute() else project_root / raw
@@ -156,7 +162,7 @@ def iter_po_paths(project_root: Path, raw_paths: Optional[list[Path]]) -> list[P
         for candidate in candidates:
             if candidate.suffix.lower() != ".po":
                 continue
-            if any(part in {".kdeai", ".git"} for part in candidate.parts):
+            if any(part in excluded for part in candidate.parts):
                 continue
             resolved = candidate.resolve()
             if resolved in seen:
