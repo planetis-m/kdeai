@@ -75,7 +75,9 @@ def _validate_plan_header(
     placeholder_patterns: list[str],
 ) -> list[str]:
     plan_project_id = str(plan.get("project_id", "")).strip()
-    if plan_project_id and plan_project_id != project_id:
+    if not plan_project_id:
+        return ["plan project_id missing"]
+    if plan_project_id != project_id:
         return ["plan project_id does not match current project"]
     plan_config_hash = str(plan.get("config_hash", ""))
     if not plan_config_hash or plan_config_hash != config.config_hash:
@@ -223,8 +225,6 @@ def _apply_comments(
 
     if append:
         append_text = str(append)
-        if not append_text.endswith("\n"):
-            append_text += "\n"
         append_lines = append_text.split("\n")
         if append_lines and append_lines[-1] == "":
             append_lines = append_lines[:-1]
@@ -412,11 +412,14 @@ def apply_plan_to_file(
             if not isinstance(ensure_lines, (list, tuple)):
                 file_errors.append("plan comments ensure_lines must be a list")
                 break
-            if append.strip():
-                file_errors.append("plan comments append is not supported")
+            if append != "" and not append.endswith("\n"):
+                file_errors.append("plan comments append must end with \\n")
                 break
             normalized_remove = [str(prefix) for prefix in remove_prefixes]
-            if any(prefix not in tool_prefix_set for prefix in normalized_remove):
+            def _is_tool_owned_prefix(prefix: str) -> bool:
+                return any(prefix.startswith(tool_prefix) for tool_prefix in tool_prefixes)
+
+            if any(not _is_tool_owned_prefix(prefix) for prefix in normalized_remove):
                 file_errors.append("plan comments remove_prefixes must use tool prefixes")
                 break
             normalized_ensure = [str(line) for line in ensure_lines]
@@ -426,7 +429,7 @@ def apply_plan_to_file(
             ):
                 file_errors.append("plan comments ensure_lines must use tool prefixes")
                 break
-            _apply_comments(entry, normalized_remove, normalized_ensure, "")
+            _apply_comments(entry, normalized_remove, normalized_ensure, append)
 
         plural_forms = po_file.metadata.get("Plural-Forms")
         validation_errors = validate.validate_entry(
@@ -472,6 +475,7 @@ def apply_plan_to_file(
             current_bytes = full_path.read_bytes()
             current_sha = hashlib.sha256(current_bytes).hexdigest()
             if current_sha != phase_a.sha256:
+                file_warnings.append(f"{file_path}: skipped: file changed since phase A")
                 result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
             elif ctx.mode == "strict" and current_sha != base_sha256:
                 result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])

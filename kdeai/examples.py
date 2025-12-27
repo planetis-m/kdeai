@@ -304,87 +304,93 @@ def _build_examples_db(
 
     conn = kdedb.connect_writable(output_path)
     conn.executescript(kdedb.EXAMPLES_SCHEMA)
-
-    include_file_sha256 = source_snapshot_kind == "reference_tm"
-    payload = _build_examples_rows(
-        rows,
-        lang=lang,
-        config=config,
-        embedder=embedder,
-        embedding_dim=embedding_dim,
-        embedding_normalization=embedding_normalization,
-        require_finite=require_finite,
-        include_file_sha256=include_file_sha256,
-    )
-
-    if payload:
-        conn.executemany(
-            "INSERT INTO examples ("
-            "source_key, source_text, lang, msgstr, msgstr_plural, review_status, "
-            "is_ai_generated, translation_hash, file_path, file_sha256, embedding"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    row.source_key,
-                    row.source_text,
-                    row.lang,
-                    row.msgstr,
-                    row.msgstr_plural,
-                    row.review_status,
-                    int(row.is_ai_generated),
-                    row.translation_hash,
-                    row.file_path,
-                    row.file_sha256,
-                    row.embedding,
-                )
-                for row in payload
-            ],
+    conn.execute("BEGIN")
+    try:
+        include_file_sha256 = source_snapshot_kind == "reference_tm"
+        payload = _build_examples_rows(
+            rows,
+            lang=lang,
+            config=config,
+            embedder=embedder,
+            embedding_dim=embedding_dim,
+            embedding_normalization=embedding_normalization,
+            require_finite=require_finite,
+            include_file_sha256=include_file_sha256,
         )
 
-    if not sqlite_vector_path:
-        conn.close()
-        raise ValueError("sqlite-vector extension path is required to build examples")
-    try:
-        kdedb.enable_sqlite_vector(conn, extension_path=sqlite_vector_path)
-    except Exception as exc:
-        conn.close()
-        raise RuntimeError(
-            f"failed to load sqlite-vector extension at {sqlite_vector_path}: {exc}"
-        ) from exc
+        if payload:
+            conn.executemany(
+                "INSERT INTO examples ("
+                "source_key, source_text, lang, msgstr, msgstr_plural, review_status, "
+                "is_ai_generated, translation_hash, file_path, file_sha256, embedding"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        row.source_key,
+                        row.source_text,
+                        row.lang,
+                        row.msgstr,
+                        row.msgstr_plural,
+                        row.review_status,
+                        int(row.is_ai_generated),
+                        row.translation_hash,
+                        row.file_path,
+                        row.file_sha256,
+                        row.embedding,
+                    )
+                    for row in payload
+                ],
+            )
 
-    _create_vector_index(
-        conn,
-        embedding_dim=embedding_dim,
-        embedding_distance=embedding_distance,
-    )
+        if not sqlite_vector_path:
+            raise ValueError("sqlite-vector extension path is required to build examples")
+        try:
+            kdedb.enable_sqlite_vector(conn, extension_path=sqlite_vector_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to load sqlite-vector extension at {sqlite_vector_path}: {exc}"
+            ) from exc
 
-    meta_payload = {
-        "schema_version": "1",
-        "kind": "examples",
-        "project_id": project_id,
-        "config_hash": config_hash,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "embed_policy_hash": embed_policy_hash,
-        "embedding_model_id": str(policy.model_id),
-        "embedding_dim": str(embedding_dim),
-        "embedding_distance": embedding_distance,
-        "vector_encoding": vector_encoding,
-        "embedding_normalization": embedding_normalization,
-        "require_finite": "1" if require_finite else "0",
-        "examples_scope": scope,
-        "examples_lang": lang,
-        "source_snapshot_kind": source_snapshot_kind,
-        "source_snapshot_id": source_snapshot_id or "",
-    }
-    conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)", meta_payload.items())
-    conn.commit()
-    kdedb.validate_meta_table(
-        conn,
-        expected_project_id=project_id,
-        expected_config_hash=config_hash,
-        expected_kind="examples",
-        expected_embed_policy_hash=embed_policy_hash,
-    )
+        _create_vector_index(
+            conn,
+            embedding_dim=embedding_dim,
+            embedding_distance=embedding_distance,
+        )
+
+        meta_payload = {
+            "schema_version": "1",
+            "kind": "examples",
+            "project_id": project_id,
+            "config_hash": config_hash,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "embed_policy_hash": embed_policy_hash,
+            "embedding_model_id": str(policy.model_id),
+            "embedding_dim": str(embedding_dim),
+            "embedding_distance": embedding_distance,
+            "vector_encoding": vector_encoding,
+            "embedding_normalization": embedding_normalization,
+            "require_finite": "1" if require_finite else "0",
+            "examples_scope": scope,
+            "examples_lang": lang,
+            "source_snapshot_kind": source_snapshot_kind,
+            "source_snapshot_id": source_snapshot_id or "",
+        }
+        conn.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?)",
+            meta_payload.items(),
+        )
+        kdedb.validate_meta_table(
+            conn,
+            expected_project_id=project_id,
+            expected_config_hash=config_hash,
+            expected_kind="examples",
+            expected_embed_policy_hash=embed_policy_hash,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
     conn.close()
     return output_path
 

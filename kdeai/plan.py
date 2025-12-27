@@ -663,9 +663,9 @@ def _collect_examples(
             eligibility=eligibility,
             review_status_order=review_status_order,
         )
-    except Exception:
+    except Exception as exc:
         if required:
-            raise
+            raise RuntimeError("examples required but query failed") from exc
         return []
 
 

@@ -2,6 +2,8 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+import contextlib
 
 import polib
 
@@ -219,6 +221,44 @@ class TestApplyAdditionalCases(unittest.TestCase):
             plan_payload.update(extra)
         return plan.finalize_plan(plan_payload)
 
+    def test_validate_plan_header_requires_project_id(self):
+        config = build_config()
+        marker_flags, comment_prefixes, _, _, ai_flag = apply._marker_settings_from_config(config)
+        placeholder_patterns = list(config.apply.validation_patterns)
+
+        missing = apply._validate_plan_header(
+            {"config_hash": config.config_hash},
+            project_id="proj",
+            config=config,
+            marker_flags=marker_flags,
+            comment_prefixes=comment_prefixes,
+            ai_flag=ai_flag,
+            placeholder_patterns=placeholder_patterns,
+        )
+        self.assertEqual(missing, ["plan project_id missing"])
+
+        mismatched = apply._validate_plan_header(
+            {"project_id": "other", "config_hash": config.config_hash},
+            project_id="proj",
+            config=config,
+            marker_flags=marker_flags,
+            comment_prefixes=comment_prefixes,
+            ai_flag=ai_flag,
+            placeholder_patterns=placeholder_patterns,
+        )
+        self.assertEqual(mismatched, ["plan project_id does not match current project"])
+
+        ok = apply._validate_plan_header(
+            {"project_id": "proj", "config_hash": config.config_hash},
+            project_id="proj",
+            config=config,
+            marker_flags=marker_flags,
+            comment_prefixes=comment_prefixes,
+            ai_flag=ai_flag,
+            placeholder_patterns=placeholder_patterns,
+        )
+        self.assertEqual(ok, [])
+
     def test_strict_skips_on_file_hash_change(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -423,6 +463,36 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated_entry = updated.find("Hello %s", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
 
+    def test_apply_comments_removes_ensures_appends(self):
+        entry = polib.POEntry(msgid="File", msgstr="")
+        entry.tcomment = (
+            "KDEAI: old\r\n"
+            "Note line\n"
+            "KDEAI-TM: remove me\n"
+            "KDEAI: keep\n"
+            "KDEAI: ensure-me\n"
+            "Other line\n"
+        )
+        remove_prefixes = ["KDEAI-TM:"]
+        ensure_lines = ["KDEAI: ensure-me", "KDEAI: ensure-new"]
+        append = "KDEAI-AI: model=x\nKDEAI: append2\n"
+
+        apply._apply_comments(entry, remove_prefixes, ensure_lines, append)
+
+        expected = "\n".join(
+            [
+                "KDEAI: old",
+                "Note line",
+                "KDEAI: keep",
+                "Other line",
+                "KDEAI: ensure-me",
+                "KDEAI: ensure-new",
+                "KDEAI-AI: model=x",
+                "KDEAI: append2",
+            ]
+        )
+        self.assertEqual(entry.tcomment, expected)
+
     def test_comment_remove_prefix_must_be_tool_prefix(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -510,6 +580,429 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
+
+    def test_comment_remove_prefix_tool_namespace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            entry.tcomment = (
+                "KDEAI-AI: model=a\n"
+                "KDEAI-AI: note\n"
+                "KDEAI-AI: model=b\n"
+                "KDEAI: keep"
+            )
+            po_file.save(str(po_path))
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["files"][0]["entries"][0]["comments"] = {
+                "remove_prefixes": ["KDEAI-AI: model="],
+                "ensure_lines": [],
+                "append": "",
+            }
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+            self.assertEqual(result.files_written, ["locale/de.po"])
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(
+                updated_entry.tcomment,
+                "KDEAI-AI: note\nKDEAI: keep",
+            )
+
+    def test_comment_append_requires_newline(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            entry.tcomment = "KDEAI: old"
+            po_file.save(str(po_path))
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["files"][0]["entries"][0]["comments"] = {
+                "remove_prefixes": [],
+                "ensure_lines": [],
+                "append": "KDEAI-AI: model=x",
+            }
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+            self.assertEqual(result.files_written, [])
+            self.assertIn("plan comments append must end with \\n", result.errors)
+
+    def test_comment_append_applies(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            entry.tcomment = "KDEAI: old"
+            po_file.save(str(po_path))
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["files"][0]["entries"][0]["comments"] = {
+                "remove_prefixes": [],
+                "ensure_lines": [],
+                "append": "KDEAI-AI: model=x\n",
+            }
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+            self.assertEqual(result.files_written, ["locale/de.po"])
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(
+                updated_entry.tcomment,
+                "KDEAI: old\nKDEAI-AI: model=x",
+            )
+
+    def test_strict_mode_skips_file_on_any_entry_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry_file = po_file.find("File", msgctxt="menu")
+            entry_edit = po_file.find("Edit", msgctxt="menu")
+            base_state_hash_file = apply.entry_state_hash(entry_file, lang="de")
+            base_state_hash_edit = apply.entry_state_hash(entry_edit, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash_file,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["files"][0]["entries"].append(
+                {
+                    "msgctxt": "menu",
+                    "msgid": "Edit",
+                    "msgid_plural": "",
+                    "base_state_hash": base_state_hash_edit + "-mismatch",
+                    "action": "copy_tm",
+                    "translation": {"msgstr": "Bearbeiten", "msgstr_plural": {}},
+                }
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertEqual(result.files_written, [])
+            self.assertEqual(result.files_skipped, ["locale/de.po"])
+            updated = polib.pofile(str(po_path))
+            updated_file = updated.find("File", msgctxt="menu")
+            updated_edit = updated.find("Edit", msgctxt="menu")
+            self.assertEqual(updated_file.msgstr, "")
+            self.assertEqual(updated_edit.msgstr, "")
+
+    def test_rebase_mode_applies_matching_entries_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry_file = po_file.find("File", msgctxt="menu")
+            entry_edit = po_file.find("Edit", msgctxt="menu")
+            base_state_hash_file = apply.entry_state_hash(entry_file, lang="de")
+            base_state_hash_edit = apply.entry_state_hash(entry_edit, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash_file + "-mismatch",
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["files"][0]["entries"].append(
+                {
+                    "msgctxt": "menu",
+                    "msgid": "Edit",
+                    "msgid_plural": "",
+                    "base_state_hash": base_state_hash_edit,
+                    "action": "copy_tm",
+                    "translation": {"msgstr": "Bearbeiten", "msgstr_plural": {}},
+                }
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="rebase",
+                overwrite="conservative",
+            )
+
+            self.assertEqual(result.files_written, ["locale/de.po"])
+            self.assertEqual(result.entries_applied, 1)
+            updated = polib.pofile(str(po_path))
+            updated_file = updated.find("File", msgctxt="menu")
+            updated_edit = updated.find("Edit", msgctxt="menu")
+            self.assertEqual(updated_file.msgstr, "")
+            self.assertEqual(updated_edit.msgstr, "Bearbeiten")
+
+    def test_overwrite_policy_matrix(self):
+        cases = [
+            ("conservative", "Alt", False, False),
+            ("conservative", "", True, False),
+            ("allow-nonempty", "Alt", False, True),
+            ("allow-nonempty", "Alt", True, False),
+            ("allow-reviewed", "", True, True),
+            ("allow-reviewed", "Alt", True, False),
+            ("all", "Alt", True, True),
+        ]
+        config = build_config()
+
+        for policy, current_msgstr, reviewed, should_apply in cases:
+            with self.subTest(policy=policy, reviewed=reviewed, current=current_msgstr):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    root = Path(tmpdir)
+                    po_path = root / "locale" / "de.po"
+                    po_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._write_sample_po(po_path)
+
+                    po_file = polib.pofile(str(po_path))
+                    entry = po_file.find("File", msgctxt="menu")
+                    entry.msgstr = current_msgstr
+                    if reviewed:
+                        entry.tcomment = "KDEAI-REVIEW: ok"
+                    po_file.save(str(po_path))
+
+                    base_bytes = po_path.read_bytes()
+                    base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+                    base_state_hash = apply.entry_state_hash(entry, lang="de")
+
+                    plan_payload = self._build_plan(
+                        file_path="locale/de.po",
+                        base_sha256=base_sha256,
+                        base_state_hash=base_state_hash,
+                        msgctxt="menu",
+                        msgid="File",
+                        translation={"msgstr": "Neu", "msgstr_plural": {}},
+                        config_hash=config.config_hash,
+                    )
+
+                    result = apply.apply_plan(
+                        plan_payload,
+                        project_root=root,
+                        project_id="proj",
+                        path_casefold=False,
+                        config=config,
+                        apply_mode="strict",
+                        overwrite=policy,
+                    )
+
+                    updated = polib.pofile(str(po_path))
+                    updated_entry = updated.find("File", msgctxt="menu")
+                    if should_apply:
+                        self.assertEqual(result.files_written, ["locale/de.po"])
+                        self.assertEqual(updated_entry.msgstr, "Neu")
+                    else:
+                        self.assertEqual(result.files_written, [])
+                        self.assertEqual(updated_entry.msgstr, current_msgstr)
+
+    def test_validator_gate_blocks_write(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            po_text = (
+                'msgid ""\n'
+                'msgstr ""\n'
+                '"Content-Type: text/plain; charset=UTF-8\\n"\n'
+                '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n'
+                "\n"
+                'msgctxt "menu"\n'
+                'msgid "File"\n'
+                'msgid_plural "Files"\n'
+                'msgstr[0] ""\n'
+                'msgstr[1] ""\n'
+            )
+            po_path.write_text(po_text, encoding="utf-8")
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "", "msgstr_plural": {"0": "Datei"}},
+                config_hash=config.config_hash,
+            )
+            plan_payload["files"][0]["entries"][0]["msgid_plural"] = "Files"
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertEqual(result.files_written, [])
+            self.assertIn("plural key consistency", result.errors)
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(updated_entry.msgstr_plural, {0: "", 1: ""})
+
+    def test_skip_when_file_changes_during_apply(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            base_state_hash = apply.entry_state_hash(entry, lang="de")
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+            )
+
+            lock_calls = 0
+
+            @contextlib.contextmanager
+            def _mutate_file_lock(_lock_path):
+                nonlocal lock_calls
+                lock_calls += 1
+                if lock_calls > 1:
+                    po_path.write_text(
+                        po_path.read_text(encoding="utf-8") + "\n# change",
+                        encoding="utf-8",
+                    )
+                yield
+
+            with mock.patch(
+                "kdeai.apply.locks.acquire_file_lock",
+                side_effect=_mutate_file_lock,
+            ):
+                result = apply.apply_plan(
+                    plan_payload,
+                    project_root=root,
+                    project_id="proj",
+                    path_casefold=False,
+                    config=config,
+                    apply_mode="strict",
+                    overwrite="conservative",
+                )
+
+            self.assertEqual(result.files_written, [])
+            self.assertEqual(result.files_skipped, ["locale/de.po"])
+            self.assertIn("locale/de.po: skipped: file changed since phase A", result.warnings)
 
     def test_needs_llm_action_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmpdir:

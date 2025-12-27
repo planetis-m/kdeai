@@ -638,6 +638,56 @@ class TestExamplesDb(unittest.TestCase):
                 _, kwargs = enable_vector.call_args
                 self.assertEqual(kwargs.get("extension_path"), "/tmp/vector.so")
 
+    def test_build_examples_db_rolls_back_on_vector_failure(self):
+        config = _base_config()
+        rows = [
+            (
+                "key1",
+                "ctx:\nid:Hello\npl:",
+                "",
+                "de",
+                "Hallo",
+                "{}",
+                "reviewed",
+                0,
+                "hash",
+                "file.po",
+            )
+        ]
+
+        def embedder(texts):
+            return [[0.1, 0.2] for _ in texts]
+
+        mock_conn = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "examples.sqlite"
+            with (
+                mock.patch("kdeai.examples.kdedb.connect_writable", return_value=mock_conn),
+                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+                mock.patch(
+                    "kdeai.examples._create_vector_index",
+                    side_effect=RuntimeError("boom"),
+                ),
+            ):
+                with self.assertRaises(RuntimeError):
+                    examples._build_examples_db(
+                        rows,
+                        output_path=output_path,
+                        scope="workspace",
+                        source_snapshot_kind="workspace_tm",
+                        source_snapshot_id=None,
+                        lang="de",
+                        config=config,
+                        project_id="proj",
+                        config_hash=config.config_hash,
+                        embed_policy_hash="hash",
+                        embedder=embedder,
+                        sqlite_vector_path="/tmp/vector.so",
+                    )
+
+        mock_conn.rollback.assert_called_once()
+        mock_conn.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
