@@ -2,20 +2,16 @@ import unittest
 
 from conftest import build_config
 from kdeai import examples
-from kdeai import po_model
 
 
 class TestExamplesBuildRows(unittest.TestCase):
-    def test_workspace_row_uses_msgctxt_column_even_if_looks_canonical(self):
+    def test_workspace_row_uses_source_text_column(self):
         config = build_config()
-        msgctxt = "ctx:x\nid:y\npl:z"
-        msgid = "Hello"
-        msgid_plural = ""
+        source_text = "ctx:x\nid:y\npl:z"
         row = (
             "key1",
-            msgctxt,
-            msgid,
-            msgid_plural,
+            source_text,
+            "",
             "de",
             "Hallo",
             "{}",
@@ -42,9 +38,8 @@ class TestExamplesBuildRows(unittest.TestCase):
         )
 
         self.assertEqual(len(payload), 1)
-        expected_source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
-        self.assertEqual(captured, [expected_source_text])
-        self.assertEqual(payload[0].source_text, expected_source_text)
+        self.assertEqual(captured, [source_text])
+        self.assertEqual(payload[0].source_text, source_text)
         self.assertEqual(payload[0].source_key, "key1")
 
 

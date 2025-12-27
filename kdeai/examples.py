@@ -17,7 +17,6 @@ from kdeai.constants import (
     ReviewStatus,
     TmScope,
 )
-from kdeai import po_model
 from kdeai.po_utils import parse_msgstr_plural
 
 
@@ -107,7 +106,7 @@ def _review_eligible(
 
 def _iter_workspace_rows(conn: sqlite3.Connection, lang: str):
     query = (
-        "SELECT s.source_key, s.msgctxt, s.msgid, s.msgid_plural, "
+        "SELECT s.source_key, s.source_text, s.msgid_plural, "
         "t.lang, t.msgstr, t.msgstr_plural, t.review_status, t.is_ai_generated, "
         "t.translation_hash, t.file_path "
         "FROM sources s "
@@ -120,7 +119,7 @@ def _iter_workspace_rows(conn: sqlite3.Connection, lang: str):
 
 def _iter_reference_rows(conn: sqlite3.Connection, lang: str):
     query = (
-        "SELECT s.source_key, s.msgctxt, s.msgid, s.msgid_plural, "
+        "SELECT s.source_key, s.source_text, s.msgid_plural, "
         "t.lang, t.msgstr, t.msgstr_plural, t.review_status, t.is_ai_generated, "
         "t.translation_hash, t.file_path, t.file_sha256 "
         "FROM sources s "
@@ -183,17 +182,15 @@ def _build_examples_rows(
     candidates: list[PendingExample] = []
     for row in rows:
         source_key = str(row[0])
-        msgctxt = str(row[1])
-        msgid = str(row[2])
-        msgid_plural = str(row[3])
-        msgstr = str(row[5])
-        msgstr_plural = str(row[6])
-        review_status = str(row[7])
-        is_ai_generated = int(row[8])
-        translation_hash = str(row[9])
-        file_path = str(row[10])
-        file_sha256 = str(row[11]) if include_file_sha256 else ""
-        source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
+        source_text = str(row[1])
+        msgid_plural = str(row[2] or "")
+        msgstr = str(row[4])
+        msgstr_plural = str(row[5])
+        review_status = str(row[6])
+        is_ai_generated = int(row[7])
+        translation_hash = str(row[8])
+        file_path = str(row[9])
+        file_sha256 = str(row[10]) if include_file_sha256 else ""
 
         if not source_text.strip():
             continue
