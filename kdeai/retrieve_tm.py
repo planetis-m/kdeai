@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, Mapping
-import json
 import sqlite3
 
 from kdeai import hash as kdehash
 from kdeai.config import Config
+from kdeai.po_utils import parse_msgstr_plural
 from kdeai.tm_types import SessionTmView
 
 DEFAULT_LOOKUP_SCOPES = ["session", "workspace", "reference"]
@@ -39,19 +39,6 @@ def _lookup_scopes(
     return list(config.tm.lookup_scopes)
 
 
-def _parse_msgstr_plural(value: object) -> dict[str, str]:
-    if isinstance(value, dict):
-        return {str(k): str(v) for k, v in value.items()}
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        if isinstance(parsed, dict):
-            return {str(k): str(v) for k, v in parsed.items()}
-    return {}
-
-
 def _is_write_eligible(msgstr: str, msgstr_plural: dict[str, str], has_plural: bool) -> bool:
     if has_plural:
         return any(value.strip() for value in msgstr_plural.values())
@@ -69,7 +56,7 @@ def _candidate_from_session(
         return None
 
     msgstr = str(entry.get("msgstr", ""))
-    msgstr_plural = _parse_msgstr_plural(entry.get("msgstr_plural", {}))
+    msgstr_plural = parse_msgstr_plural(entry.get("msgstr_plural", {}))
     review_status = str(entry.get("review_status", "draft"))
     is_ai_generated = int(entry.get("is_ai_generated", 0))
     translation_hash = str(
@@ -101,8 +88,6 @@ def _lookup_session(
     entry = None
     if (source_key, lang) in session_tm:
         entry = session_tm[(source_key, lang)]
-    elif source_key in session_tm:
-        entry = session_tm[source_key]
     if entry is None:
         return None
     return _candidate_from_session(source_key, lang, entry)
@@ -132,7 +117,7 @@ def _lookup_workspace(
         lang=str(row[1]),
         file_path=str(row[2]),
         msgstr=str(row[3]),
-        msgstr_plural=_parse_msgstr_plural(row[4]),
+        msgstr_plural=parse_msgstr_plural(row[4]),
         review_status=str(row[5]),
         is_ai_generated=int(row[6]),
         translation_hash=str(row[7]),
@@ -165,7 +150,7 @@ def _lookup_reference(
         file_path=str(row[2]),
         file_sha256=str(row[3]),
         msgstr=str(row[4]),
-        msgstr_plural=_parse_msgstr_plural(row[5]),
+        msgstr_plural=parse_msgstr_plural(row[5]),
         review_status=str(row[6]),
         is_ai_generated=int(row[7]),
         translation_hash=str(row[8]),

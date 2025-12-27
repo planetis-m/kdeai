@@ -724,6 +724,7 @@ def examples_build(
                         project_id=str(project.project_data["project_id"]),
                         config_hash=config.config_hash,
                         embed_policy_hash=config.embed_policy_hash,
+                        sqlite_vector_path=sqlite_vector_path,
                     )
                     db.conn.close()
                     typer.echo(f"Examples cache already current for {target_lang}.")
@@ -802,6 +803,7 @@ def examples_build(
             project_id=str(project.project_data["project_id"]),
             config_hash=config.config_hash,
             embed_policy_hash=config.embed_policy_hash,
+            sqlite_vector_path=sqlite_vector_path,
         )
         meta = dict(meta_db.meta)
         meta_db.conn.close()

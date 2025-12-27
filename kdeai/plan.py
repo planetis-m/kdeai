@@ -448,6 +448,7 @@ def _open_examples_db(
     project_id: str,
     config_hash: str,
     embed_policy_hash: str,
+    sqlite_vector_path: str | None,
 ) -> kdeexamples.ExamplesDb | None:
     pointer_path = _examples_pointer_path(project_root, scope=scope, lang=lang)
     if not pointer_path.exists():
@@ -469,6 +470,7 @@ def _open_examples_db(
             project_id=project_id,
             config_hash=config_hash,
             embed_policy_hash=embed_policy_hash,
+            sqlite_vector_path=sqlite_vector_path,
         )
     except Exception as exc:
         logger.debug("Examples DB open failed: %s", exc)
@@ -554,29 +556,13 @@ def _build_assets(
                 project_id=project_id,
                 config_hash=config_hash,
                 embed_policy_hash=embed_policy_hash,
+                sqlite_vector_path=sqlite_vector_path,
             )
             if examples_db is not None:
                 break
 
     if examples_mode == "required" and (examples_db is None or embedder is None):
         raise ValueError("examples required but unavailable")
-
-    if examples_db is not None:
-        if sqlite_vector_path:
-            try:
-                kdedb.enable_sqlite_vector(
-                    examples_db.conn, extension_path=sqlite_vector_path
-                )
-            except Exception:
-                if examples_mode == "required":
-                    raise
-                examples_db.conn.close()
-                examples_db = None
-        else:
-            if examples_mode == "required":
-                raise ValueError("examples required but sqlite-vector unavailable")
-            examples_db.conn.close()
-            examples_db = None
 
     glossary_scopes, glossary_max_terms, glossary_default, normalization_id = _glossary_settings(
         config

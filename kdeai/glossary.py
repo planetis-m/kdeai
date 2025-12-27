@@ -12,6 +12,7 @@ import spacy
 from kdeai import db as kdedb
 from kdeai.config import Config
 from kdeai import hash as kdehash
+from kdeai.po_utils import parse_msgstr_plural
 
 NORMALIZATION_ID = "kdeai_glossary_norm_v1"
 MAX_TERM_TOKENS = 4
@@ -99,19 +100,6 @@ def _parse_json_list(value: object) -> list[str]:
     return []
 
 
-def _parse_msgstr_plural(value: object) -> dict[str, str]:
-    if isinstance(value, dict):
-        return {str(k): str(v) for k, v in value.items()}
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        if isinstance(parsed, dict):
-            return {str(k): str(v) for k, v in parsed.items()}
-    return {}
-
-
 def _select_translation(msgstr: str, msgstr_plural: Mapping[str, str]) -> str:
     if msgstr.strip():
         return msgstr
@@ -171,7 +159,7 @@ def build_glossary_db(
         msgid = str(row[1])
         lang = str(row[3])
         msgstr = str(row[4])
-        msgstr_plural = _parse_msgstr_plural(row[5])
+        msgstr_plural = parse_msgstr_plural(row[5])
         file_path = str(row[6])
         file_sha256 = str(row[7])
 

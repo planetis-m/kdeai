@@ -194,8 +194,8 @@ def test_build_examples_db_from_playground(tmp_path: Path, monkeypatch) -> None:
         project_id="test-project",
         config_hash="test-config",
         embed_policy_hash="test-embed-policy",
+        sqlite_vector_path=str(project_root / "vector.so"),
     )
-    kdedb.enable_sqlite_vector(db.conn, extension_path="./vector.so")
     try:
         matches = examples.query_examples(
             db,
@@ -229,8 +229,8 @@ def test_retrieve_few_shot_examples_from_db(tmp_path: Path, monkeypatch) -> None
         project_id="test-project",
         config_hash="test-config",
         embed_policy_hash="test-embed-policy",
+        sqlite_vector_path=str(project_root / "vector.so"),
     )
-    kdedb.enable_sqlite_vector(db.conn, extension_path="./vector.so")
     try:
         matches = examples.query_examples(
             db,

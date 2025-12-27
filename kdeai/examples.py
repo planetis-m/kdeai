@@ -5,13 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 import array
-import json
 import math
 import sqlite3
 import sys
 
 from kdeai import db as kdedb
 from kdeai.config import Config, ExamplesEligibility
+from kdeai.po_utils import parse_msgstr_plural
 
 
 DEFAULT_MIN_REVIEW_STATUS = "reviewed"
@@ -61,6 +61,20 @@ class ExamplesDb:
 EmbeddingFunc = Callable[[Sequence[str]], Sequence[Sequence[float]]]
 
 
+@dataclass(frozen=True)
+class PendingExample:
+    source_key: str
+    source_text: str
+    lang: str
+    msgstr: str
+    msgstr_plural: str
+    review_status: str
+    is_ai_generated: int
+    translation_hash: str
+    file_path: str
+    file_sha256: str
+
+
 def _examples_settings(config: Config) -> tuple[list[str], str, bool]:
     examples = config.prompt.examples
     eligibility = examples.eligibility
@@ -68,19 +82,6 @@ def _examples_settings(config: Config) -> tuple[list[str], str, bool]:
     min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
     allow_ai_generated = bool(eligibility.allow_ai_generated)
     return review_status_order, min_review_status, allow_ai_generated
-
-
-def _parse_msgstr_plural(value: object) -> dict[str, str]:
-    if isinstance(value, dict):
-        return {str(k): str(v) for k, v in value.items()}
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        if isinstance(parsed, dict):
-            return {str(k): str(v) for k, v in parsed.items()}
-    return {}
 
 
 def _is_non_empty(msgstr: str, msgstr_plural: Mapping[str, str], has_plural: bool) -> bool:
@@ -178,7 +179,7 @@ def _build_examples_rows(
     include_file_sha256: bool,
 ) -> list[ExampleRow]:
     review_order, min_review_status, allow_ai_generated = _examples_settings(config)
-    candidates: list[dict[str, object]] = []
+    candidates: list[PendingExample] = []
     for row in rows:
         source_key = str(row[0])
         source_text = str(row[1])
@@ -201,29 +202,29 @@ def _build_examples_rows(
             continue
         if not allow_ai_generated and is_ai_generated:
             continue
-        plural_map = _parse_msgstr_plural(msgstr_plural)
+        plural_map = parse_msgstr_plural(msgstr_plural)
         has_plural = msgid_plural != ""
         if not _is_non_empty(msgstr, plural_map, has_plural):
             continue
         candidates.append(
-            {
-                "source_key": source_key,
-                "source_text": source_text,
-                "lang": lang,
-                "msgstr": msgstr,
-                "msgstr_plural": msgstr_plural,
-                "review_status": review_status,
-                "is_ai_generated": is_ai_generated,
-                "translation_hash": translation_hash,
-                "file_path": file_path,
-                "file_sha256": file_sha256,
-            }
+            PendingExample(
+                source_key=source_key,
+                source_text=source_text,
+                lang=lang,
+                msgstr=msgstr,
+                msgstr_plural=msgstr_plural,
+                review_status=review_status,
+                is_ai_generated=is_ai_generated,
+                translation_hash=translation_hash,
+                file_path=file_path,
+                file_sha256=file_sha256,
+            )
         )
 
     if not candidates:
         return []
 
-    embeddings = embedder([str(row["source_text"]) for row in candidates])
+    embeddings = embedder([row.source_text for row in candidates])
     if len(embeddings) != len(candidates):
         raise ValueError("embedder returned unexpected number of embeddings")
 
@@ -237,16 +238,16 @@ def _build_examples_rows(
         )
         payload.append(
             ExampleRow(
-                source_key=str(row["source_key"]),
-                source_text=str(row["source_text"]),
-                lang=str(row["lang"]),
-                msgstr=str(row["msgstr"]),
-                msgstr_plural=str(row["msgstr_plural"]),
-                review_status=str(row["review_status"]),
-                is_ai_generated=int(row["is_ai_generated"]),
-                translation_hash=str(row["translation_hash"]),
-                file_path=str(row["file_path"]),
-                file_sha256=str(row["file_sha256"]),
+                source_key=row.source_key,
+                source_text=row.source_text,
+                lang=row.lang,
+                msgstr=row.msgstr,
+                msgstr_plural=row.msgstr_plural,
+                review_status=row.review_status,
+                is_ai_generated=int(row.is_ai_generated),
+                translation_hash=row.translation_hash,
+                file_path=row.file_path,
+                file_sha256=row.file_sha256,
                 embedding=blob,
             )
         )
@@ -291,7 +292,7 @@ def _build_examples_db(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
-        output_path.unlink()
+        raise FileExistsError(output_path)
 
     conn = kdedb.connect_writable(output_path)
     conn.executescript(kdedb.EXAMPLES_SCHEMA)
@@ -461,15 +462,29 @@ def open_examples_db(
     project_id: str,
     config_hash: str,
     embed_policy_hash: str,
+    sqlite_vector_path: str | None,
 ) -> ExamplesDb:
     conn = kdedb.connect_readonly(path)
-    meta = kdedb.validate_meta_table(
-        conn,
-        expected_project_id=project_id,
-        expected_config_hash=config_hash,
-        expected_kind="examples",
-        expected_embed_policy_hash=embed_policy_hash,
-    )
+    try:
+        meta = kdedb.validate_meta_table(
+            conn,
+            expected_project_id=project_id,
+            expected_config_hash=config_hash,
+            expected_kind="examples",
+            expected_embed_policy_hash=embed_policy_hash,
+        )
+        _validate_examples_meta(meta)
+        if sqlite_vector_path is None:
+            raise RuntimeError("sqlite-vector unavailable")
+        try:
+            kdedb.enable_sqlite_vector(conn, extension_path=sqlite_vector_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to load sqlite-vector extension at {sqlite_vector_path}: {exc}"
+            ) from exc
+    except Exception:
+        conn.close()
+        raise
     return ExamplesDb(
         conn=conn,
         meta=meta,
@@ -479,6 +494,50 @@ def open_examples_db(
         embedding_normalization=str(meta["embedding_normalization"]),
         require_finite=str(meta["require_finite"]).strip().lower() in {"1", "true"},
     )
+
+
+def _validate_examples_meta(meta: Mapping[str, str]) -> None:
+    required_keys = [
+        "schema_version",
+        "kind",
+        "project_id",
+        "config_hash",
+        "created_at",
+        "embed_policy_hash",
+        "embedding_model_id",
+        "embedding_dim",
+        "embedding_distance",
+        "vector_encoding",
+        "embedding_normalization",
+        "require_finite",
+        "examples_scope",
+        "examples_lang",
+        "source_snapshot_kind",
+        "source_snapshot_id",
+    ]
+    missing = [key for key in required_keys if key not in meta]
+    if missing:
+        raise ValueError(f"invalid examples DB meta: missing {', '.join(missing)}")
+    blank = [
+        key
+        for key in required_keys
+        if meta.get(key, "") == "" and key != "source_snapshot_id"
+    ]
+    if blank:
+        raise ValueError(f"invalid examples DB meta: empty {', '.join(blank)}")
+    if meta.get("vector_encoding") != "float32_le":
+        raise ValueError("invalid examples DB meta: vector_encoding must be float32_le")
+    try:
+        embedding_dim = int(meta.get("embedding_dim", ""))
+    except ValueError as exc:
+        raise ValueError("invalid examples DB meta: embedding_dim must be an int") from exc
+    if embedding_dim <= 0:
+        raise ValueError("invalid examples DB meta: embedding_dim must be > 0")
+    source_kind = meta.get("source_snapshot_kind", "")
+    if source_kind == "reference_tm" and meta.get("source_snapshot_id", "") == "":
+        raise ValueError(
+            "invalid examples DB meta: source_snapshot_id required for reference_tm"
+        )
 
 
 def _vector_query_sql(
@@ -542,16 +601,6 @@ def query_examples(
             embedding_dim=db.embedding_dim,
             require_finite=db.require_finite,
         )
-    try:
-        db.conn.execute(
-            "SELECT vector_init('examples', 'embedding', ?)",
-            (
-                f"type=FLOAT32,dimension={db.embedding_dim},distance={db.embedding_distance.upper()}",
-            ),
-        )
-        db.conn.execute("SELECT vector_quantize_preload('examples', 'embedding')")
-    except Exception as exc:
-        raise RuntimeError("sqlite-vector unavailable for examples") from exc
 
     review_statuses: list[str] | None = None
     allow_ai_generated: bool | None = None
@@ -577,7 +626,10 @@ def query_examples(
     if review_statuses:
         params.extend(review_statuses)
 
-    rows = db.conn.execute(sql, params).fetchall()[:top_n]
+    try:
+        rows = db.conn.execute(sql, params).fetchall()[:top_n]
+    except Exception as exc:
+        raise RuntimeError("sqlite-vector unavailable for examples") from exc
     matches: list[ExampleMatch] = []
     for row in rows:
         matches.append(
@@ -586,7 +638,7 @@ def query_examples(
                 source_text=str(row[1]),
                 lang=str(row[2]),
                 msgstr=str(row[3]),
-                msgstr_plural=_parse_msgstr_plural(row[4]),
+                msgstr_plural=parse_msgstr_plural(row[4]),
                 review_status=str(row[5]),
                 is_ai_generated=int(row[6]),
                 translation_hash=str(row[7]),

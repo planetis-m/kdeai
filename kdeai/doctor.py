@@ -192,6 +192,7 @@ def _check_examples_pointers(
     project_id: str,
     config_hash: str,
     embed_policy_hash: str,
+    sqlite_vector_path: str | None,
     repair_cache: bool,
     report: DoctorReport,
     valid_example_paths: list[Path],
@@ -235,6 +236,7 @@ def _check_examples_pointers(
                     project_id=project_id,
                     config_hash=config_hash,
                     embed_policy_hash=embed_policy_hash,
+                    sqlite_vector_path=sqlite_vector_path,
                 )
             except Exception as exc:
                 if repair_cache:
@@ -327,9 +329,9 @@ def _run_examples_smoke_test(
                 project_id=project_id,
                 config_hash=config_hash,
                 embed_policy_hash=embed_policy_hash,
+                sqlite_vector_path=sqlite_vector_path,
             )
             try:
-                kdedb.enable_sqlite_vector(db.conn, extension_path=sqlite_vector_path)
                 row = db.conn.execute("SELECT embedding FROM examples LIMIT 1").fetchone()
                 if row is None:
                     report.warnings.append(f"examples smoke test skipped (empty): {path}")
@@ -397,6 +399,7 @@ def run_doctor(
         project_id=project_id,
         config_hash=config_hash,
         embed_policy_hash=config.embed_policy_hash,
+        sqlite_vector_path=sqlite_vector_path,
         repair_cache=repair_cache,
         report=report,
         valid_example_paths=valid_example_paths,

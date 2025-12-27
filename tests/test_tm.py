@@ -120,7 +120,7 @@ class TestWorkspaceIndexing(unittest.TestCase):
         )
 
         workspace_tm._recompute_best_translations(
-            conn,
+            conn.cursor(),
             source_keys=[source_key],
             lang="de",
             review_status_order=workspace_tm.DEFAULT_REVIEW_STATUS_ORDER,
@@ -134,6 +134,49 @@ class TestWorkspaceIndexing(unittest.TestCase):
 
 
 class TestTmRetrieval(unittest.TestCase):
+    def test_session_tm_requires_exact_lang(self):
+        source_key = "source-key"
+        session_tm = {
+            (source_key, "de"): {
+                "msgstr": "Hallo",
+                "msgstr_plural": {},
+                "review_status": "draft",
+                "is_ai_generated": 0,
+            },
+            source_key: {
+                "msgstr": "Fallback",
+                "msgstr_plural": {},
+                "review_status": "draft",
+                "is_ai_generated": 0,
+            },
+        }
+
+        result = retrieve_tm.lookup_tm_exact(
+            source_key,
+            "de",
+            has_plural=False,
+            session_tm=session_tm,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.scope, "session")
+        self.assertEqual(result.msgstr, "Hallo")
+
+        result = retrieve_tm.lookup_tm_exact(
+            source_key,
+            "fr",
+            has_plural=False,
+            session_tm=session_tm,
+        )
+        self.assertIsNone(result)
+
+        result = retrieve_tm.lookup_tm_exact(
+            source_key,
+            "de",
+            has_plural=False,
+            session_tm={source_key: session_tm[source_key]},
+        )
+        self.assertIsNone(result)
+
     def test_exact_only_skips_empty_then_workspace(self):
         workspace_conn = _setup_workspace_db()
         source_key = "source-key"

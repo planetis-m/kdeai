@@ -91,7 +91,7 @@ def _selection_key(
 
 
 def _recompute_best_translations(
-    conn: sqlite3.Connection,
+    cursor: sqlite3.Cursor,
     *,
     source_keys: Iterable[str],
     lang: str,
@@ -110,7 +110,7 @@ def _recompute_best_translations(
         "JOIN files f ON t.file_path = f.file_path AND t.lang = f.lang "
         f"WHERE t.lang = ? AND t.source_key IN ({placeholders})"
     )
-    rows = conn.execute(query, [lang, *keys]).fetchall()
+    rows = cursor.execute(query, [lang, *keys]).fetchall()
 
     grouped: dict[str, list[dict[str, object]]] = {key: [] for key in keys}
     for row in rows:
@@ -134,7 +134,7 @@ def _recompute_best_translations(
     for source_key in keys:
         candidates = grouped.get(source_key) or []
         if not candidates:
-            conn.execute(
+            cursor.execute(
                 "DELETE FROM best_translations WHERE source_key = ? AND lang = ?",
                 (source_key, lang),
             )
@@ -144,7 +144,7 @@ def _recompute_best_translations(
             candidates,
             key=lambda row: _selection_key(row, review_rank, prefer_human, default_rank),
         )
-        conn.execute(
+        cursor.execute(
             "INSERT INTO best_translations ("
             "source_key, lang, file_path, msgstr, msgstr_plural, "
             "review_status, is_ai_generated, translation_hash"
@@ -279,7 +279,7 @@ def index_file_snapshot_tm(
         affected_keys = prior_source_keys | new_source_keys
 
         _recompute_best_translations(
-            conn,
+            cursor,
             source_keys=affected_keys,
             lang=lang,
             review_status_order=review_status_order,
