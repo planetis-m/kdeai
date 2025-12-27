@@ -134,6 +134,30 @@ class TestWorkspaceIndexing(unittest.TestCase):
 
 
 class TestTmRetrieval(unittest.TestCase):
+    def test_session_candidate_overrides_scope(self):
+        candidate = retrieve_tm.TmCandidate(
+            source_key="ctx:\nid:Hello\npl:",
+            lang="de",
+            msgstr="Hallo",
+            msgstr_plural={},
+            review_status="reviewed",
+            is_ai_generated=0,
+            translation_hash="hash",
+            scope="workspace",
+            file_path="file.po",
+            file_sha256="sha",
+        )
+        session_tm = {(candidate.source_key, candidate.lang): candidate}
+        result = retrieve_tm.lookup_tm_exact(
+            candidate.source_key,
+            candidate.lang,
+            has_plural=False,
+            session_tm=session_tm,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.scope, "session")
+        self.assertEqual(result.file_path, "")
+
     def test_session_tm_requires_exact_lang(self):
         source_key = "source-key"
         session_tm = {

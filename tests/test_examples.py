@@ -106,6 +106,26 @@ class TestExamplesEligibility(unittest.TestCase):
         )
         self.assertEqual(payload, [])
 
+
+class TestQueryExamples(unittest.TestCase):
+    def test_query_examples_top_n_zero_skips_sql(self):
+        db = examples.ExamplesDb(
+            conn=mock.Mock(),
+            meta={},
+            embedding_dim=2,
+            embedding_distance="cosine",
+            vector_encoding="float32_le",
+            embedding_normalization="none",
+            require_finite=True,
+        )
+        result = examples.query_examples(
+            db,
+            query_embedding=[0.1, 0.2],
+            top_n=0,
+        )
+        self.assertEqual(result, [])
+        db.conn.execute.assert_not_called()
+
     def test_plural_accepts_any_non_empty_form(self):
         config = _base_config()
         rows = [
@@ -448,6 +468,62 @@ class TestExamplesDb(unittest.TestCase):
                         embed_policy_hash="embed-hash",
                         sqlite_vector_path="/tmp/vector.so",
                     )
+
+    def test_open_examples_db_rejects_bad_examples_scope(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "examples.sqlite"
+            _write_examples_meta_db(db_path)
+            meta = _example_meta()
+            meta["examples_scope"] = "foo"
+            with (
+                mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
+                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+            ):
+                with self.assertRaises(ValueError):
+                    examples.open_examples_db(
+                        db_path,
+                        project_id="proj",
+                        config_hash="config",
+                        embed_policy_hash="embed-hash",
+                        sqlite_vector_path="/tmp/vector.so",
+                    )
+
+    def test_open_examples_db_rejects_bad_source_snapshot_kind(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "examples.sqlite"
+            _write_examples_meta_db(db_path)
+            meta = _example_meta()
+            meta["source_snapshot_kind"] = "bar"
+            with (
+                mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
+                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+            ):
+                with self.assertRaises(ValueError):
+                    examples.open_examples_db(
+                        db_path,
+                        project_id="proj",
+                        config_hash="config",
+                        embed_policy_hash="embed-hash",
+                        sqlite_vector_path="/tmp/vector.so",
+                    )
+
+    def test_open_examples_db_accepts_valid_meta(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "examples.sqlite"
+            _write_examples_meta_db(db_path)
+            meta = _example_meta()
+            with (
+                mock.patch("kdeai.examples.kdedb.validate_meta_table", return_value=meta),
+                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector"),
+            ):
+                db = examples.open_examples_db(
+                    db_path,
+                    project_id="proj",
+                    config_hash="config",
+                    embed_policy_hash="embed-hash",
+                    sqlite_vector_path="/tmp/vector.so",
+                )
+                db.conn.close()
 
     def test_open_examples_db_requires_reference_snapshot_id(self):
         with tempfile.TemporaryDirectory() as tmpdir:

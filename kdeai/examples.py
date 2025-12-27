@@ -525,6 +525,15 @@ def _validate_examples_meta(meta: Mapping[str, str]) -> None:
     ]
     if blank:
         raise ValueError(f"invalid examples DB meta: empty {', '.join(blank)}")
+    if meta.get("kind") and meta.get("kind") != "examples":
+        raise ValueError("invalid examples DB meta: kind must be examples")
+    if meta.get("schema_version") and meta.get("schema_version") != "1":
+        raise ValueError("invalid examples DB meta: schema_version must be 1")
+    examples_scope = meta.get("examples_scope", "")
+    if examples_scope not in {"workspace", "reference"}:
+        raise ValueError(
+            "invalid examples DB meta: examples_scope must be workspace or reference"
+        )
     if meta.get("vector_encoding") != "float32_le":
         raise ValueError("invalid examples DB meta: vector_encoding must be float32_le")
     try:
@@ -534,6 +543,10 @@ def _validate_examples_meta(meta: Mapping[str, str]) -> None:
     if embedding_dim <= 0:
         raise ValueError("invalid examples DB meta: embedding_dim must be > 0")
     source_kind = meta.get("source_snapshot_kind", "")
+    if source_kind not in {"workspace_tm", "reference_tm"}:
+        raise ValueError(
+            "invalid examples DB meta: source_snapshot_kind must be workspace_tm or reference_tm"
+        )
     if source_kind == "reference_tm" and meta.get("source_snapshot_id", "") == "":
         raise ValueError(
             "invalid examples DB meta: source_snapshot_id required for reference_tm"
@@ -588,6 +601,8 @@ def query_examples(
     eligibility: ExamplesEligibility | None = None,
     review_status_order: Sequence[str] | None = None,
 ) -> list[ExampleMatch]:
+    if top_n <= 0:
+        return []
     if isinstance(query_embedding, (bytes, bytearray)):
         blob = bytes(query_embedding)
         if len(blob) != 4 * db.embedding_dim:

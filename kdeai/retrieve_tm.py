@@ -51,7 +51,18 @@ def _candidate_from_session(
     entry: object,
 ) -> TmCandidate | None:
     if isinstance(entry, TmCandidate):
-        return entry
+        return TmCandidate(
+            source_key=entry.source_key,
+            lang=entry.lang,
+            msgstr=entry.msgstr,
+            msgstr_plural=entry.msgstr_plural,
+            review_status=entry.review_status,
+            is_ai_generated=entry.is_ai_generated,
+            translation_hash=entry.translation_hash,
+            scope="session",
+            file_path="",
+            file_sha256="",
+        )
     if not isinstance(entry, Mapping):
         return None
 

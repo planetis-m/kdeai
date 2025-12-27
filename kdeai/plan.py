@@ -449,6 +449,7 @@ def _open_examples_db(
     config_hash: str,
     embed_policy_hash: str,
     sqlite_vector_path: str | None,
+    required: bool,
 ) -> kdeexamples.ExamplesDb | None:
     pointer_path = _examples_pointer_path(project_root, scope=scope, lang=lang)
     if not pointer_path.exists():
@@ -473,6 +474,12 @@ def _open_examples_db(
             sqlite_vector_path=sqlite_vector_path,
         )
     except Exception as exc:
+        message = (
+            "examples required but DB open/validation failed for "
+            f"scope={scope} lang={lang}"
+        )
+        if required:
+            raise RuntimeError(message) from exc
         logger.debug("Examples DB open failed: %s", exc)
         return None
 
@@ -546,8 +553,14 @@ def _build_assets(
     if examples_mode is None:
         examples_mode = examples_default
 
+    if examples_mode == "required":
+        if embedder is None:
+            raise ValueError("examples required but no embedder provided")
+        if sqlite_vector_path is None:
+            raise ValueError("examples required but sqlite-vector path missing")
+
     examples_db = None
-    if examples_mode != "off" and cache != "off":
+    if examples_mode != "off" and cache != "off" and embedder is not None:
         for scope in examples_scopes:
             examples_db = _open_examples_db(
                 project_root,
@@ -557,11 +570,12 @@ def _build_assets(
                 config_hash=config_hash,
                 embed_policy_hash=embed_policy_hash,
                 sqlite_vector_path=sqlite_vector_path,
+                required=examples_mode == "required",
             )
             if examples_db is not None:
                 break
 
-    if examples_mode == "required" and (examples_db is None or embedder is None):
+    if examples_mode == "required" and examples_db is None:
         raise ValueError("examples required but unavailable")
 
     glossary_scopes, glossary_max_terms, glossary_default, normalization_id = _glossary_settings(
@@ -602,13 +616,6 @@ def _build_assets(
     elif glossary_mode == "required":
         raise ValueError("glossary required but unavailable")
 
-    if embedder is None:
-        if examples_mode == "required":
-            raise ValueError("examples required but no embedder provided")
-        if examples_db is not None:
-            examples_db.conn.close()
-            examples_db = None
-
     return (
         PlannerAssets(
             workspace_conn=workspace_conn,
@@ -638,7 +645,15 @@ def _collect_examples(
 ) -> list[kdeexamples.ExampleMatch]:
     if examples_db is None or embedder is None:
         return []
-    embedding = embedder([source_text])[0]
+    try:
+        embeddings = embedder([source_text])
+        if len(embeddings) != 1:
+            raise ValueError("expected single embedding")
+        embedding = embeddings[0]
+    except Exception:
+        if required:
+            raise RuntimeError("examples required but embedding failed")
+        return []
     try:
         return kdeexamples.query_examples(
             examples_db,
