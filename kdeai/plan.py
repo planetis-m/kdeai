@@ -37,10 +37,6 @@ from kdeai.tm_types import SessionTmView
 PLAN_FORMAT_VERSION = 1
 logger = logging.getLogger(__name__)
 
-ExamplesMode = AssetModeLiteral
-GlossaryMode = AssetModeLiteral
-
-
 EmbeddingFunc = Callable[[Sequence[str]], Sequence[Sequence[float]]]
 
 if TYPE_CHECKING:
@@ -72,11 +68,15 @@ def build_plan_header(
     }
 
 
-def examples_mode_from_config(config: Config, override: ExamplesMode | None) -> ExamplesMode:
+def examples_mode_from_config(
+    config: Config, override: AssetModeLiteral | None
+) -> AssetModeLiteral:
     return str(override or config.prompt.examples.mode_default or AssetMode.AUTO)
 
 
-def glossary_mode_from_config(config: Config, override: GlossaryMode | None) -> GlossaryMode:
+def glossary_mode_from_config(
+    config: Config, override: AssetModeLiteral | None
+) -> AssetModeLiteral:
     return str(override or config.prompt.glossary.mode_default or AssetMode.AUTO)
 
 
@@ -90,7 +90,7 @@ def require_embedder(policy: EmbeddingPolicy) -> kdeexamples.EmbeddingFunc:
 
 
 def _maybe_embedder(
-    examples_mode: ExamplesMode,
+    examples_mode: AssetModeLiteral,
     policy: EmbeddingPolicy,
 ) -> kdeexamples.EmbeddingFunc | None:
     if examples_mode == AssetMode.OFF:
@@ -106,11 +106,13 @@ def _maybe_embedder(
 def resolve_planner_inputs(
     *,
     cache_mode: CacheModeLiteral,
-    examples: ExamplesMode | None,
-    glossary: GlossaryMode | None,
+    examples: AssetModeLiteral | None,
+    glossary: AssetModeLiteral | None,
     config: Config,
     project_root: Path,
-) -> tuple[ExamplesMode, GlossaryMode, kdeexamples.EmbeddingFunc | None, str | None]:
+) -> tuple[
+    AssetModeLiteral, AssetModeLiteral, kdeexamples.EmbeddingFunc | None, str | None
+]:
     resolved_examples_mode = examples_mode_from_config(config, examples)
     resolved_glossary_mode = glossary_mode_from_config(config, glossary)
     if cache_mode == CacheMode.OFF and (
@@ -207,8 +209,8 @@ DraftPlan = dict[str, object]
 @dataclass(frozen=True)
 class PlannerOptions:
     cache: str = CacheMode.ON
-    examples_mode: ExamplesMode | None = None
-    glossary_mode: GlossaryMode | None = None
+    examples_mode: AssetModeLiteral | None = None
+    glossary_mode: AssetModeLiteral | None = None
     embedder: EmbeddingFunc | None = None
     sqlite_vector_path: str | None = None
 
@@ -614,7 +616,7 @@ def _open_examples(
     embed_policy_hash: str,
     lang: str,
     cache: str,
-    examples_mode: ExamplesMode,
+    examples_mode: AssetModeLiteral,
     examples_scopes: Sequence[str],
     embedder: EmbeddingFunc | None,
     sqlite_vector_path: str | None,
@@ -657,7 +659,7 @@ def _open_glossary(
     config: Config,
     lang: str,
     cache: str,
-    glossary_mode: GlossaryMode,
+    glossary_mode: AssetModeLiteral,
     glossary_scopes: Sequence[str],
 ) -> tuple[sqlite3.Connection | None, object | None]:
     """Open glossary DB and build matcher if enabled."""
@@ -701,11 +703,11 @@ def _build_assets(
     config: Config,
     lang: str,
     cache: str,
-    examples_mode: ExamplesMode | None,
-    glossary_mode: GlossaryMode | None,
+    examples_mode: AssetModeLiteral | None,
+    glossary_mode: AssetModeLiteral | None,
     embedder: EmbeddingFunc | None,
     sqlite_vector_path: str | None,
-) -> tuple[PlannerAssets, ExamplesMode, GlossaryMode]:
+) -> tuple[PlannerAssets, AssetModeLiteral, AssetModeLiteral]:
     config_hash = config.config_hash
     embed_policy_hash = config.embed_policy_hash
     if cache == CacheMode.OFF:

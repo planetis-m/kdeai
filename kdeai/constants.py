@@ -85,6 +85,7 @@ OverwritePolicyLiteral = Literal[
     OverwritePolicy.ALL,
 ]
 PostIndexLiteral = Literal[PostIndex.ON, PostIndex.OFF]
+ExamplesScope = Literal["workspace", "reference"]
 
 
 # Schema versions

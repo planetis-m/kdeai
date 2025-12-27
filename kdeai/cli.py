@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Optional, NoReturn, Literal
+from typing import Optional, NoReturn
 import os
 from datetime import datetime, timezone
 
@@ -35,6 +35,7 @@ from kdeai.constants import (
     CacheMode,
     CacheModeLiteral,
     DbKind,
+    ExamplesScope,
     OverwritePolicyLiteral,
     PostIndex,
     PostIndexLiteral,
@@ -58,22 +59,12 @@ app.add_typer(reference_app, name="reference")
 app.add_typer(examples_app, name="examples")
 app.add_typer(glossary_app, name="glossary")
 
-OnOff = CacheModeLiteral
-ExamplesMode = AssetModeLiteral
-GlossaryMode = AssetModeLiteral
-OverwriteModeLiteral = OverwritePolicyLiteral
-ExamplesScope = Literal["workspace", "reference"]
-
-
 def _project_dir(project_root: Path) -> Path:
     return project_root / ".kdeai"
 
 
 def _cache_path(project_root: Path, *parts: str) -> Path:
     return project_root / ".kdeai" / "cache" / Path(*parts)
-
-
-_read_json = po_utils.read_json
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -95,7 +86,7 @@ def _glossary_is_current(
     if not pointer_path.exists():
         return False
     try:
-        pointer = _read_json(pointer_path, pointer_path.name)
+        pointer = po_utils.read_json(pointer_path, pointer_path.name)
         db_file = str(pointer.get("db_file", ""))
         pointer_snapshot_id = int(pointer.get("snapshot_id", 0))
         db_path = pointer_path.parent / db_file
@@ -115,7 +106,6 @@ def _glossary_is_current(
             return True
     except Exception:
         return False
-    return False
 
 
 def _acquire_run_lock(project_root: Path, ctx: typer.Context) -> None:
@@ -144,11 +134,6 @@ def _load_project(project_root: Path, command_name: str) -> Project:
         _exit_with_error(f"{command_name} failed: {exc}")
 
 
-_normalize_relpath = po_utils.normalize_relpath
-_relpath_key = po_utils.relpath_key
-
-
-_iter_po_paths = po_utils.iter_po_paths
 
 
 def _parse_lang_from_bytes(po_bytes: bytes) -> Optional[str]:
@@ -163,7 +148,7 @@ def _next_pointer_id(pointer_path: Path, key: str) -> int:
     if not pointer_path.exists():
         return 1
     try:
-        payload = _read_json(pointer_path, pointer_path.name)
+        payload = po_utils.read_json(pointer_path, pointer_path.name)
         pointer_id = int(payload.get(key, 0))
     except (OSError, ValueError):
         pointer_id = 0
@@ -292,9 +277,9 @@ def plan(
     lang: str = typer.Option(..., "--lang"),
     out: Optional[Path] = typer.Option(None, "--out"),
     cache: Optional[CacheModeLiteral] = typer.Option(None, "--cache"),
-    cache_write: Optional[OnOff] = typer.Option(None, "--cache-write"),
-    examples: Optional[ExamplesMode] = typer.Option(None, "--examples"),
-    glossary: Optional[GlossaryMode] = typer.Option(None, "--glossary"),
+    cache_write: Optional[CacheModeLiteral] = typer.Option(None, "--cache-write"),
+    examples: Optional[AssetModeLiteral] = typer.Option(None, "--examples"),
+    glossary: Optional[AssetModeLiteral] = typer.Option(None, "--glossary"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
@@ -335,7 +320,7 @@ def plan(
         options=options,
         session_tm={},
     ) as builder:
-        for path in _iter_po_paths(project_root, paths):
+        for path in po_utils.iter_po_paths(project_root, paths):
             file_draft = kdeplan.generate_plan_for_file(
                 project_root=project_root,
                 project_id=project_id,
@@ -369,8 +354,8 @@ def plan(
 def apply(
     plan_path: Path = typer.Argument(...),
     apply_mode: Optional[ApplyModeLiteral] = typer.Option(None, "--apply-mode"),
-    overwrite: Optional[OverwriteModeLiteral] = typer.Option(None, "--overwrite"),
-    post_index: OnOff = typer.Option(PostIndex.OFF, "--post-index"),
+    overwrite: Optional[OverwritePolicyLiteral] = typer.Option(None, "--overwrite"),
+    post_index: PostIndexLiteral = typer.Option(PostIndex.OFF, "--post-index"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
@@ -378,7 +363,6 @@ def apply(
     post_index_flag = post_index == PostIndex.ON
     project = _load_project(project_root, "Apply")
     config = project.config
-
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
@@ -421,11 +405,11 @@ def translate(
     lang: str = typer.Option(..., "--lang"),
     out: Optional[Path] = typer.Option(None, "--out"),
     apply_mode: Optional[ApplyModeLiteral] = typer.Option(None, "--apply-mode"),
-    overwrite: Optional[OverwriteModeLiteral] = typer.Option(None, "--overwrite"),
+    overwrite: Optional[OverwritePolicyLiteral] = typer.Option(None, "--overwrite"),
     cache: Optional[CacheModeLiteral] = typer.Option(None, "--cache"),
-    cache_write: Optional[OnOff] = typer.Option(None, "--cache-write"),
-    examples: Optional[ExamplesMode] = typer.Option(None, "--examples"),
-    glossary: Optional[GlossaryMode] = typer.Option(None, "--glossary"),
+    cache_write: Optional[CacheModeLiteral] = typer.Option(None, "--cache-write"),
+    examples: Optional[AssetModeLiteral] = typer.Option(None, "--examples"),
+    glossary: Optional[AssetModeLiteral] = typer.Option(None, "--glossary"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
@@ -483,7 +467,7 @@ def translate(
             builder=builder,
             apply_defaults=apply_defaults,
         )
-        for path in _iter_po_paths(project_root, paths):
+        for path in po_utils.iter_po_paths(project_root, paths):
             file_plan = kdeplan.generate_plan_for_file(
                 project_root=project_root,
                 project_id=project_id,
@@ -554,9 +538,9 @@ def index(
             config=config,
         )
     ) as conn:
-        for path in _iter_po_paths(project_root, paths):
-            relpath = _normalize_relpath(project_root, path)
-            relpath_key = _relpath_key(relpath, path_casefold)
+        for path in po_utils.iter_po_paths(project_root, paths):
+            relpath = po_utils.normalize_relpath(project_root, path)
+            relpath_key = po_utils.relpath_key(relpath, path_casefold)
             lock_path = locks.per_file_lock_path(
                 project_root,
                 locks.lock_id(project_id, relpath_key),
@@ -658,7 +642,7 @@ def examples_build(
         )
         if skip_if_current and pointer_path.exists():
             try:
-                pointer = _read_json(pointer_path, pointer_path.name)
+                pointer = po_utils.read_json(pointer_path, pointer_path.name)
                 db_file = str(pointer.get("db_file", ""))
                 db_path = pointer_path.parent / db_file
                 if db_path.exists():
@@ -705,7 +689,7 @@ def examples_build(
                 )
             source_snapshot = {"kind": DbKind.WORKSPACE_TM, "snapshot_id": 0}
         else:
-            pointer = _read_json(
+            pointer = po_utils.read_json(
                 _cache_path(project_root, "reference", "reference.current.json"),
                 "reference.current.json",
             )
@@ -773,7 +757,7 @@ def glossary_build(
     project_id = str(project.project_data["project_id"])
     pointer_path = _cache_path(project_root, "glossary", "glossary.current.json")
 
-    ref_pointer = _read_json(
+    ref_pointer = po_utils.read_json(
         _cache_path(project_root, "reference", "reference.current.json"),
         "reference.current.json",
     )

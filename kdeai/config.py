@@ -6,11 +6,11 @@ import hashlib
 import json
 
 from kdeai import hash as kdehash
+from kdeai.constants import ExamplesScope
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 OverwritePolicy = Literal["conservative", "allow-nonempty", "allow-reviewed", "all"]
 TmScope = Literal["session", "workspace", "reference"]
-ExamplesScope = Literal["workspace", "reference"]
 GlossaryScope = Literal["reference"]
 AssetMode = Literal["off", "auto", "required"]
 ApplyMode = Literal["strict", "rebase"]
