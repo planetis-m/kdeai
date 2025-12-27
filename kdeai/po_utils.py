@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
 import json
 import re
 import tempfile
@@ -48,10 +48,20 @@ def is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
     return bool(lines)
 
 
+def is_translation_non_empty(
+    msgstr: str,
+    msgstr_plural: Mapping[str, str],
+    has_plural: bool,
+) -> bool:
+    if has_plural:
+        return any(str(value).strip() for value in msgstr_plural.values())
+    return msgstr.strip() != ""
+
+
 def has_non_empty_translation(entry: polib.POEntry) -> bool:
-    if entry.msgid_plural:
-        return any(str(value).strip() for value in entry.msgstr_plural.values())
-    return (entry.msgstr or "").strip() != ""
+    msgstr = entry.msgstr or ""
+    msgstr_plural = entry.msgstr_plural or {}
+    return is_translation_non_empty(msgstr, msgstr_plural, bool(entry.msgid_plural))
 
 
 def can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> bool:

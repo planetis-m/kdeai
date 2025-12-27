@@ -247,60 +247,53 @@ def _derive_tag_patch(
     model_id: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     markers = config.markers
+    add_flags: list[str] = []
+    remove_flags: list[str] = []
+    ensure_lines: list[str] = []
+    remove_prefixes: list[str] = []
+    tool_prefixes = [markers.comment_prefixes.tm, markers.comment_prefixes.ai]
+    ordered_prefixes: list[str] = []
+
     if tag_profile == "tm_copy":
         tm_cfg = config.apply.tagging.tm_copy
         add_flags = list(tm_cfg.add_flags)
-        remove_flags: list[str] = []
         if tm_cfg.add_ai_flag:
             add_flags.append(markers.ai_flag)
         else:
             remove_flags.append(markers.ai_flag)
         comment_prefix_key = str(tm_cfg.comment_prefix_key or "tm")
-        comment_prefixes = markers.comment_prefixes
-        comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.tm)
-        remove_prefixes: list[str] = []
-        for prefix in (comment_prefix, comment_prefixes.tm, comment_prefixes.ai):
-            if prefix and prefix not in remove_prefixes:
-                remove_prefixes.append(prefix)
+        comment_prefix = getattr(
+            markers.comment_prefixes, comment_prefix_key, markers.comment_prefixes.tm
+        )
         scope_value = str(tm_scope or "unknown")
-        ensured_line = f"{comment_prefix} copied_from={scope_value}"
-        flags = {"add": add_flags, "remove": remove_flags}
-        comments = {
-            "remove_prefixes": remove_prefixes,
-            "ensure_lines": [ensured_line],
-            "append": "",
-        }
-        return flags, comments
-    if tag_profile == "llm":
+        ensure_lines = [f"{comment_prefix} copied_from={scope_value}"]
+        ordered_prefixes = [comment_prefix] + tool_prefixes
+    elif tag_profile == "llm":
         llm_cfg = config.apply.tagging.llm
         add_flags = list(llm_cfg.add_flags)
         if llm_cfg.add_ai_flag:
             add_flags.append(markers.ai_flag)
         comment_prefix_key = str(llm_cfg.comment_prefix_key or "ai")
-        comment_prefixes = markers.comment_prefixes
-        comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.ai)
-        remove_prefixes: list[str] = []
-        for prefix in (comment_prefix, comment_prefixes.ai, comment_prefixes.tm):
-            if prefix and prefix not in remove_prefixes:
-                remove_prefixes.append(prefix)
+        comment_prefix = getattr(
+            markers.comment_prefixes, comment_prefix_key, markers.comment_prefixes.ai
+        )
         resolved_model_id = str(model_id or config.prompt.generation_model_id or "unknown")
-        ensured_line = f"{comment_prefix} model={resolved_model_id}"
-        flags = {"add": add_flags, "remove": []}
-        comments = {
-            "remove_prefixes": remove_prefixes,
-            "ensure_lines": [ensured_line],
-            "append": "",
-        }
-        return flags, comments
-    return {"add": [], "remove": []}, {"remove_prefixes": [], "ensure_lines": [], "append": ""}
+        ensure_lines = [f"{comment_prefix} model={resolved_model_id}"]
+        ordered_prefixes = [comment_prefix, tool_prefixes[1], tool_prefixes[0]]
+    else:
+        return {"add": [], "remove": []}, {"remove_prefixes": [], "ensure_lines": [], "append": ""}
+
+    for prefix in ordered_prefixes:
+        if prefix and prefix not in remove_prefixes:
+            remove_prefixes.append(prefix)
+
+    flags = {"add": add_flags, "remove": remove_flags}
+    comments = {"remove_prefixes": remove_prefixes, "ensure_lines": ensure_lines, "append": ""}
+    return flags, comments
 
 
 def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
     return po_utils.is_reviewed(entry, review_prefix)
-
-
-def _has_non_empty_translation(entry: polib.POEntry) -> bool:
-    return po_utils.has_non_empty_translation(entry)
 
 
 def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> bool:
@@ -308,7 +301,11 @@ def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> b
 
 
 def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
-    non_empty = po_utils.has_non_empty_translation(entry)
+    non_empty = po_utils.is_translation_non_empty(
+        entry.msgstr or "",
+        entry.msgstr_plural or {},
+        bool(entry.msgid_plural),
+    )
     if not non_empty:
         return ReviewStatus.UNREVIEWED
     if "fuzzy" in entry.flags:
@@ -481,7 +478,11 @@ def apply_plan_to_file(
     # Filter to entries that pass overwrite policy
     applicable: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     for entry_item, entry, action in to_apply:
-        current_non_empty = _has_non_empty_translation(entry)
+        current_non_empty = po_utils.is_translation_non_empty(
+            entry.msgstr or "",
+            entry.msgstr_plural or {},
+            bool(entry.msgid_plural),
+        )
         reviewed = _is_reviewed(entry, ctx.review_prefix)
         if _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
             applicable.append((entry_item, entry, action))

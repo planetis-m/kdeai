@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
-import array
 import math
 import sqlite3
+import struct
 import sys
 
 from kdeai import db as kdedb
@@ -17,7 +17,7 @@ from kdeai.constants import (
     ReviewStatus,
     TmScope,
 )
-from kdeai.po_utils import parse_msgstr_plural
+from kdeai.po_utils import is_translation_non_empty, parse_msgstr_plural
 
 
 DEFAULT_MIN_REVIEW_STATUS = ReviewStatus.REVIEWED
@@ -79,12 +79,6 @@ class PendingExample:
     translation_hash: str
     file_path: str
     file_sha256: str
-
-
-def _is_non_empty(msgstr: str, msgstr_plural: Mapping[str, str], has_plural: bool) -> bool:
-    if has_plural:
-        return any(str(value).strip() for value in msgstr_plural.values())
-    return msgstr.strip() != ""
 
 
 def _review_rank(order: Sequence[str]) -> dict[str, int]:
@@ -153,15 +147,8 @@ def _pack_embedding(
     floats = [float(value) for value in values]
     if require_finite and any(not math.isfinite(value) for value in floats):
         raise ValueError("embedding contains non-finite values")
-    data = array.array("f", floats)
-    if data.itemsize != 4:
-        raise ValueError("embedding must be float32")
-    if sys.byteorder != "little":
-        data.byteswap()
-    blob = data.tobytes()
-    if len(blob) != 4 * embedding_dim:
-        raise ValueError("embedding blob length mismatch")
-    return blob
+    fmt = f"<{embedding_dim}f"
+    return struct.pack(fmt, *floats)
 
 
 def _build_examples_rows(
@@ -204,7 +191,7 @@ def _build_examples_rows(
             continue
         plural_map = parse_msgstr_plural(msgstr_plural)
         has_plural = msgid_plural != ""
-        if not _is_non_empty(msgstr, plural_map, has_plural):
+        if not is_translation_non_empty(msgstr, plural_map, has_plural):
             continue
         candidates.append(
             PendingExample(

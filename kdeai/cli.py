@@ -785,8 +785,13 @@ def glossary_build(
         "glossary",
         f"glossary.{glossary_gen_id}.sqlite",
     )
-    if output_path.exists():
-        _exit_with_error(f"Glossary DB already exists: {output_path}")
+    while output_path.exists():
+        glossary_gen_id += 1
+        output_path = _cache_path(
+            project_root,
+            "glossary",
+            f"glossary.{glossary_gen_id}.sqlite",
+        )
     try:
         with closing(kdedb.connect_readonly(db_path)) as reference_conn:
             kdeglo.build_glossary_db(

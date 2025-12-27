@@ -425,12 +425,14 @@ def generate_plan_for_file(
 def _has_non_empty_translation(translation: object, msgid_plural: object) -> bool:
     if not isinstance(translation, Mapping):
         return False
-    if str(msgid_plural or ""):
-        msgstr_plural = translation.get("msgstr_plural")
-        if isinstance(msgstr_plural, Mapping):
-            return any(str(value).strip() for value in msgstr_plural.values())
-        return False
-    return bool(str(translation.get("msgstr", "")).strip())
+    has_plural = bool(str(msgid_plural or ""))
+    msgstr = str(translation.get("msgstr", ""))
+    msgstr_plural = translation.get("msgstr_plural")
+    if isinstance(msgstr_plural, Mapping):
+        plural_map = {str(key): str(value) for key, value in msgstr_plural.items()}
+    else:
+        plural_map = {}
+    return po_utils.is_translation_non_empty(msgstr, plural_map, has_plural)
 
 
 def _sorted_entries(entries: list[dict]) -> list[dict]:
@@ -522,19 +524,23 @@ def _open_workspace_tm(
     return conn
 
 
-def _open_reference_tm(
+def _open_readonly_asset(
     project_root: Path,
     *,
+    pointer_relpath: str,
     project_id: str,
     config_hash: str,
+    expected_kind: str,
+    validation_kwargs: Mapping[str, object] | None = None,
 ) -> sqlite3.Connection | None:
-    pointer_path = project_root / ".kdeai" / "cache" / "reference" / "reference.current.json"
+    pointer_path = project_root / pointer_relpath
     if not pointer_path.exists():
         return None
+    label = Path(pointer_relpath).name
     try:
-        pointer = po_utils.read_json(pointer_path, "reference.current.json")
+        pointer = po_utils.read_json(pointer_path, label)
     except Exception as exc:
-        logger.debug("Reference pointer read failed: %s", exc)
+        logger.debug("Asset pointer read failed (%s): %s", pointer_relpath, exc)
         return None
     db_file = pointer.get("db_file")
     if not db_file:
@@ -548,13 +554,29 @@ def _open_reference_tm(
             conn,
             expected_project_id=project_id,
             expected_config_hash=config_hash,
-            expected_kind=DbKind.REFERENCE_TM,
+            expected_kind=expected_kind,
+            **(validation_kwargs or {}),
         )
     except Exception as exc:
-        logger.debug("Reference TM validation failed: %s", exc)
+        logger.debug("Asset validation failed (%s): %s", pointer_relpath, exc)
         conn.close()
         return None
     return conn
+
+
+def _open_reference_tm(
+    project_root: Path,
+    *,
+    project_id: str,
+    config_hash: str,
+) -> sqlite3.Connection | None:
+    return _open_readonly_asset(
+        project_root,
+        pointer_relpath=".kdeai/cache/reference/reference.current.json",
+        project_id=project_id,
+        config_hash=config_hash,
+        expected_kind=DbKind.REFERENCE_TM,
+    )
 
 
 def _open_glossary_db(
@@ -564,34 +586,14 @@ def _open_glossary_db(
     config_hash: str,
     normalization_id: str,
 ) -> sqlite3.Connection | None:
-    pointer_path = project_root / ".kdeai" / "cache" / "glossary" / "glossary.current.json"
-    if not pointer_path.exists():
-        return None
-    try:
-        pointer = po_utils.read_json(pointer_path, "glossary.current.json")
-    except Exception as exc:
-        logger.debug("Glossary pointer read failed: %s", exc)
-        return None
-    db_file = pointer.get("db_file")
-    if not db_file:
-        return None
-    db_path = pointer_path.parent / str(db_file)
-    if not db_path.exists():
-        return None
-    conn = kdedb.connect_readonly(db_path)
-    try:
-        kdedb.validate_meta_table(
-            conn,
-            expected_project_id=project_id,
-            expected_config_hash=config_hash,
-            expected_kind=DbKind.GLOSSARY,
-            expected_normalization_id=normalization_id,
-        )
-    except Exception as exc:
-        logger.debug("Glossary DB validation failed: %s", exc)
-        conn.close()
-        return None
-    return conn
+    return _open_readonly_asset(
+        project_root,
+        pointer_relpath=".kdeai/cache/glossary/glossary.current.json",
+        project_id=project_id,
+        config_hash=config_hash,
+        expected_kind=DbKind.GLOSSARY,
+        validation_kwargs={"expected_normalization_id": normalization_id},
+    )
 
 
 def _open_tm_connections(
