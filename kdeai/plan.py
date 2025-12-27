@@ -380,6 +380,7 @@ def generate_plan_for_file(
     po_file = po_utils.load_po_from_bytes(locked.bytes)
     if po_file is None:
         raise ValueError(f"Failed to parse PO file: {relpath}")
+    plural_forms = po_file.metadata.get("Plural-Forms")
     file_draft = builder.build_draft(relpath, po_file)
     file_draft["base_sha256"] = locked.sha256
 
@@ -404,7 +405,12 @@ def generate_plan_for_file(
 
         configure_dspy(builder.config)
         needs_llm = _sorted_entries(needs_llm)
-        kdellm.batch_translate(needs_llm, builder.config, target_lang=builder.lang)
+        kdellm.batch_translate(
+            needs_llm,
+            builder.config,
+            target_lang=builder.lang,
+            plural_forms=plural_forms,
+        )
         if any(
             not _has_non_empty_translation(entry.get("translation"), entry.get("msgid_plural", ""))
             for entry in needs_llm

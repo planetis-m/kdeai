@@ -530,6 +530,40 @@ class TestApplyAdditionalCases(unittest.TestCase):
         )
         self.assertEqual(entry.tcomment, expected)
 
+    def test_apply_flags_removes_ai_flag(self):
+        entry = polib.POEntry(msgid="File", msgstr="")
+        entry.flags = ["fuzzy", "kdeai-ai", "keep"]
+
+        apply._apply_flags(entry, add_flags=["fuzzy"], remove_flags=["kdeai-ai"])
+
+        self.assertEqual(entry.flags, ["fuzzy", "keep"])
+
+    def test_apply_comments_removes_tool_prefixes_only(self):
+        entry = polib.POEntry(msgid="File", msgstr="")
+        entry.tcomment = (
+            "KDEAI-AI: model=old\n"
+            "Note line\n"
+            "KDEAI-TM: copied\n"
+            "KDEAI-REVIEW: ok\n"
+            "KDEAI: keep\n"
+        )
+        remove_prefixes = ["KDEAI-AI:", "KDEAI-TM:"]
+        ensure_lines = ["KDEAI-AI: model=new"]
+        append = ""
+
+        apply._apply_comments(entry, remove_prefixes, ensure_lines, append)
+
+        expected = "\n".join(
+            [
+                "Note line",
+                "KDEAI-REVIEW: ok",
+                "KDEAI: keep",
+                "KDEAI-AI: model=new",
+                "",
+            ]
+        )
+        self.assertEqual(entry.tcomment, expected)
+
     def test_plan_rejects_comments_field(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

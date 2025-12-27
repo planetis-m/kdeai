@@ -250,16 +250,23 @@ def _derive_tag_patch(
     if tag_profile == "tm_copy":
         tm_cfg = config.apply.tagging.tm_copy
         add_flags = list(tm_cfg.add_flags)
+        remove_flags: list[str] = []
         if tm_cfg.add_ai_flag:
             add_flags.append(markers.ai_flag)
+        else:
+            remove_flags.append(markers.ai_flag)
         comment_prefix_key = str(tm_cfg.comment_prefix_key or "tm")
         comment_prefixes = markers.comment_prefixes
         comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.tm)
+        remove_prefixes: list[str] = []
+        for prefix in (comment_prefix, comment_prefixes.tm, comment_prefixes.ai):
+            if prefix and prefix not in remove_prefixes:
+                remove_prefixes.append(prefix)
         scope_value = str(tm_scope or "unknown")
         ensured_line = f"{comment_prefix} copied_from={scope_value}"
-        flags = {"add": add_flags, "remove": []}
+        flags = {"add": add_flags, "remove": remove_flags}
         comments = {
-            "remove_prefixes": [comment_prefix],
+            "remove_prefixes": remove_prefixes,
             "ensure_lines": [ensured_line],
             "append": "",
         }
@@ -272,11 +279,15 @@ def _derive_tag_patch(
         comment_prefix_key = str(llm_cfg.comment_prefix_key or "ai")
         comment_prefixes = markers.comment_prefixes
         comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.ai)
+        remove_prefixes: list[str] = []
+        for prefix in (comment_prefix, comment_prefixes.ai, comment_prefixes.tm):
+            if prefix and prefix not in remove_prefixes:
+                remove_prefixes.append(prefix)
         resolved_model_id = str(model_id or config.prompt.generation_model_id or "unknown")
         ensured_line = f"{comment_prefix} model={resolved_model_id}"
         flags = {"add": add_flags, "remove": []}
         comments = {
-            "remove_prefixes": [comment_prefix],
+            "remove_prefixes": remove_prefixes,
             "ensure_lines": [ensured_line],
             "append": "",
         }

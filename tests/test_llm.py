@@ -6,7 +6,11 @@ from pathlib import Path
 import types
 
 from conftest import build_config
-from kdeai.llm import batch_translate, build_prompt_payload as llm_build_prompt_payload
+from kdeai.llm import (
+    _translation_payload,
+    batch_translate,
+    build_prompt_payload as llm_build_prompt_payload,
+)
 from kdeai.prompt import build_prompt_payload as prompt_build_prompt_payload
 
 
@@ -60,6 +64,20 @@ def test_llm_build_prompt_payload_uses_source_text_v1() -> None:
         target_lang="de",
     )
     assert payload["source_text_v1"] == "ctx:\nid:Save\npl:"
+
+
+def test_translation_payload_fills_plural_forms() -> None:
+    payload = _translation_payload(
+        msgid_plural="Files",
+        translated_text="Datei",
+        translated_plural="Dateien",
+        plural_forms="nplurals=3; plural=...;",
+    )
+
+    assert payload["msgstr"] == ""
+    assert payload["msgstr_plural"]["0"] == "Datei"
+    assert payload["msgstr_plural"]["1"] == "Dateien"
+    assert payload["msgstr_plural"]["2"] == "Dateien"
 
 
 def _load_env_if_missing(keys: list[str]) -> None:

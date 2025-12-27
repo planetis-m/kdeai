@@ -94,16 +94,19 @@ def _glossary_is_current(
         if not db_path.exists():
             return False
         with closing(kdedb.connect_readonly(db_path)) as conn:
-            meta = kdedb.validate_meta_table(
+            kdedb.validate_meta_table(
                 conn,
                 expected_project_id=project_id,
                 expected_config_hash=config.config_hash,
                 expected_kind=DbKind.GLOSSARY,
                 expected_normalization_id=glossary_normalization_id(config),
             )
+            meta = kdedb.read_meta(conn)
         meta_snapshot_id = int(meta.get("snapshot_id", "0"))
         source_snapshot_id = int(meta.get("source_snapshot_id", "0"))
         if meta_snapshot_id != pointer_snapshot_id:
+            return False
+        if meta.get("source_snapshot_kind") != DbKind.REFERENCE_TM:
             return False
         if source_snapshot_id != reference_snapshot_id:
             return False
@@ -782,6 +785,8 @@ def glossary_build(
         "glossary",
         f"glossary.{glossary_gen_id}.sqlite",
     )
+    if output_path.exists():
+        _exit_with_error(f"Glossary DB already exists: {output_path}")
     try:
         with closing(kdedb.connect_readonly(db_path)) as reference_conn:
             kdeglo.build_glossary_db(

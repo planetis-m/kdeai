@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, Optional
 import json
+import re
 import tempfile
 
 import polib
@@ -128,6 +129,19 @@ def read_json(path: Path, label: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError(f"{label} must be a JSON object: {path}")
     return payload
+
+
+def parse_nplurals(plural_forms: str | None) -> int | None:
+    if not plural_forms:
+        return None
+    match = re.search(r"nplurals\s*=\s*(\d+)", plural_forms, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        value = int(match.group(1))
+    except ValueError:
+        return None
+    return value if value >= 1 else None
 
 
 def parse_msgstr_plural(value: object) -> dict[str, str]:

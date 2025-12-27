@@ -7,6 +7,7 @@ import dspy
 from kdeai.config import Config
 from kdeai.constants import PlanAction
 from kdeai import po_model
+from kdeai import po_utils
 from kdeai import prompt as kdeprompt
 from kdeai.prompt import PromptData
 
@@ -97,12 +98,19 @@ def _translation_payload(
     msgid_plural: str,
     translated_text: str,
     translated_plural: str,
+    plural_forms: str | None = None,
 ) -> dict[str, object]:
     if msgid_plural:
-        plural_value = translated_plural.strip() or translated_text
+        nplurals = po_utils.parse_nplurals(plural_forms) or 2
+        singular_value = translated_text.strip()
+        plural_value = translated_plural.strip() or singular_value
+        msgstr_plural = {
+            str(idx): (singular_value if idx == 0 else plural_value)
+            for idx in range(nplurals)
+        }
         return {
             "msgstr": "",
-            "msgstr_plural": {"0": translated_text, "1": plural_value},
+            "msgstr_plural": msgstr_plural,
         }
     return {"msgstr": translated_text, "msgstr_plural": {}}
 
@@ -124,6 +132,7 @@ def batch_translate(
     config: Config,
     *,
     target_lang: str,
+    plural_forms: str | None = None,
 ) -> list[MutableMapping[str, object]]:
     if dspy.settings.lm is None:
         raise RuntimeError("DSPy not configured. Call configure_dspy() before batch_translate().")
@@ -148,6 +157,7 @@ def batch_translate(
             msgid_plural=msgid_plural,
             translated_text=translated_text,
             translated_plural=translated_plural,
+            plural_forms=plural_forms,
         )
         entry.setdefault("action", PlanAction.LLM)
         entry.setdefault("tag_profile", "llm")

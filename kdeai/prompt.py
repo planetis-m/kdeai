@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence, TYPE_CHECKING, TypedDict
 
 from kdeai import hash as kdehash
+from kdeai import po_model
 from kdeai.config import Config
 
 class PromptData(TypedDict):
@@ -19,17 +20,6 @@ if TYPE_CHECKING:
 else:  # pragma: no cover - avoid heavy imports at runtime
     ExampleMatch = object  # type: ignore
     GlossaryMatch = object  # type: ignore
-
-
-def _normalize_field(value: str | None) -> str:
-    return value if value is not None else ""
-
-
-def source_text_v1(msgctxt: str | None, msgid: str, msgid_plural: str | None) -> str:
-    """Canonical source text used for prompts and embeddings."""
-    norm_ctxt = _normalize_field(msgctxt)
-    norm_plural = _normalize_field(msgid_plural)
-    return f"ctx:{norm_ctxt}\nid:{msgid}\npl:{norm_plural}"
 
 
 def _example_translation(example: ExampleMatch) -> str:
@@ -210,7 +200,7 @@ def build_prompt_payload(
     examples = list(examples or [])
     glossary = list(glossary or [])
 
-    source_text = source_text_v1(msgctxt, msgid, msgid_plural)
+    source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
     system = _system_prompt(source_lang, target_lang)
     user = _user_prompt(
         source_text,

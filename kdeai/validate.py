@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from typing import Iterable, Mapping, Pattern
 
+from kdeai.po_utils import parse_nplurals
 
 class NonEmptyValidator:
     error_message = "non-empty translation"
@@ -28,18 +29,6 @@ class NonEmptyValidator:
         return None
 
 
-def _parse_nplurals(plural_forms: str | None) -> int | None:
-    if not plural_forms:
-        return None
-    match = re.search(r"nplurals\s*=\s*(\d+)", plural_forms)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
-
-
 class PluralConsistencyValidator:
     error_message = "plural key consistency"
 
@@ -56,7 +45,7 @@ class PluralConsistencyValidator:
         _ = msgid, msgstr, placeholder_patterns
         if not msgid_plural:
             return None
-        nplurals = _parse_nplurals(plural_forms)
+        nplurals = parse_nplurals(plural_forms)
         keys = list(msgstr_plural.keys())
         if any(not str(key).isdigit() for key in keys):
             return self.error_message
