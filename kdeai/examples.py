@@ -17,6 +17,7 @@ from kdeai.constants import (
     ReviewStatus,
     TmScope,
 )
+from kdeai.math_utils import normalize_embedding
 from kdeai.po_utils import is_translation_non_empty, parse_msgstr_plural
 
 
@@ -124,18 +125,6 @@ def _iter_reference_rows(conn: sqlite3.Connection, lang: str):
     return conn.execute(query, (lang,))
 
 
-def _normalize_embedding(values: Sequence[float], normalization: str) -> list[float]:
-    if normalization == "none":
-        return [float(value) for value in values]
-    if normalization == "l2_normalize":
-        floats = [float(value) for value in values]
-        norm = math.sqrt(sum(value * value for value in floats))
-        if norm == 0.0:
-            return floats
-        return [value / norm for value in floats]
-    raise ValueError(f"unsupported embedding normalization: {normalization}")
-
-
 def _pack_embedding(
     values: Sequence[float],
     *,
@@ -217,7 +206,7 @@ def _build_examples_rows(
 
     payload: list[ExampleRow] = []
     for row, embedding in zip(candidates, embeddings):
-        normalized = _normalize_embedding(embedding, embedding_normalization)
+        normalized = normalize_embedding(embedding, embedding_normalization)
         blob = _pack_embedding(
             normalized,
             embedding_dim=embedding_dim,
@@ -626,9 +615,7 @@ def query_examples(
         if len(blob) != 4 * db.embedding_dim:
             raise ValueError("query embedding blob length mismatch")
     else:
-        normalized = _normalize_embedding(
-            query_embedding, db.embedding_normalization
-        )
+        normalized = normalize_embedding(query_embedding, db.embedding_normalization)
         blob = _pack_embedding(
             normalized,
             embedding_dim=db.embedding_dim,

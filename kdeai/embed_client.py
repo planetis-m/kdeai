@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Iterable, Sequence
-import math
 import os
 
 import dspy
@@ -9,6 +8,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from kdeai.config import EmbeddingPolicy
+from kdeai.math_utils import normalize_embedding
 
 load_dotenv()
 
@@ -47,13 +47,6 @@ def _get_client() -> OpenAI:
     return _CLIENT
 
 
-def _normalize(values: list[float]) -> list[float]:
-    norm = math.sqrt(sum(value * value for value in values))
-    if norm == 0.0:
-        return values
-    return [value / norm for value in values]
-
-
 def _openai_embed(
     texts: Sequence[str],
     *,
@@ -81,9 +74,7 @@ def _openai_embed(
                     f"embedding dim mismatch: expected {target_dim}, got {len(values)}"
                 )
             values = values[:target_dim]
-        if normalization == "l2_normalize":
-            values = _normalize(values)
-        embeddings.append(values)
+        embeddings.append(normalize_embedding(values, normalization))
     return embeddings
 
 
