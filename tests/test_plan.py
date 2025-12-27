@@ -401,7 +401,6 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
                     path_casefold=False,
                     builder=builder,
                     config=config,
-                    run_llm=True,
                 )
             finally:
                 kdellm.KDEAITranslator.forward = original_forward
@@ -445,3 +444,47 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "Datei")
+
+    def test_generate_plan_for_file_run_llm_false_raises(self):
+        config = build_config()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            locale_dir = root / "locale"
+            locale_dir.mkdir(parents=True, exist_ok=True)
+            po_path = locale_dir / "de.po"
+            po_text = (
+                'msgid ""\n'
+                'msgstr ""\n'
+                '"Content-Type: text/plain; charset=UTF-8\\n"\n'
+                '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n'
+                "\n"
+                'msgctxt "menu"\n'
+                'msgid "File"\n'
+                'msgstr ""\n'
+            )
+            po_path.write_text(po_text, encoding="utf-8")
+
+            builder = kdeplan.PlanBuilder(
+                project_root=root,
+                project_id="proj",
+                config=config,
+                lang="de",
+                cache="off",
+                examples_mode="off",
+                glossary_mode="off",
+                embedder=None,
+                sqlite_vector_path=None,
+            )
+            try:
+                with self.assertRaisesRegex(ValueError, "run_llm must be True"):
+                    kdeplan._generate_plan_for_file(
+                        project_root=root,
+                        project_id="proj",
+                        path=po_path,
+                        path_casefold=False,
+                        builder=builder,
+                        config=config,
+                        run_llm=False,
+                    )
+            finally:
+                builder.close()

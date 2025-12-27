@@ -343,7 +343,6 @@ def plan(
                 path_casefold=path_casefold,
                 builder=builder,
                 config=config,
-                run_llm=True,
             )
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
@@ -520,7 +519,6 @@ def translate(
                 path_casefold=path_casefold,
                 builder=builder,
                 config=config,
-                run_llm=True,
             )
             files_payload.append(file_plan)
             per_file_plan = dict(plan_header)
