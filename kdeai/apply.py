@@ -320,10 +320,15 @@ def apply_plan_to_file(
 
     to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     mismatch = False
+    mismatch_reason: str | None = None
     for entry_item in plan_items:
         if not isinstance(entry_item, Mapping):
-            mismatch = True
-            break
+            if ctx.mode == "strict":
+                mismatch = True
+                mismatch_reason = "invalid plan entry"
+                break
+            file_warnings.append(f"{file_path}: ignored invalid plan entry (not an object)")
+            continue
         action = str(entry_item.get("action", ""))
         if action == "needs_llm":
             continue
@@ -342,6 +347,7 @@ def apply_plan_to_file(
         if entry is None:
             if ctx.mode == "strict":
                 mismatch = True
+                mismatch_reason = "missing entry"
                 break
             continue
         current_hash = _entry_state_hash(
@@ -354,13 +360,15 @@ def apply_plan_to_file(
         if current_hash != base_state_hash:
             if ctx.mode == "strict":
                 mismatch = True
+                mismatch_reason = "entry state mismatch"
                 break
             continue
         to_apply.append((entry_item, entry, action))
 
     if mismatch:
         if ctx.mode == "strict":
-            file_warnings.append(f"{file_path}: skipped (strict): entry state mismatch")
+            reason = mismatch_reason or "entry state mismatch"
+            file_warnings.append(f"{file_path}: skipped (strict): {reason}")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     file_errors: list[str] = []
@@ -461,10 +469,11 @@ def apply_plan_to_file(
     result: ApplyFileResult | None = None
     try:
         with locks.acquire_file_lock(lock_path):
-            phase_c = snapshot.read_file_snapshot(full_path)
-            if phase_c.sha256 != phase_a.sha256:
+            current_bytes = full_path.read_bytes()
+            current_sha = hashlib.sha256(current_bytes).hexdigest()
+            if current_sha != phase_a.sha256:
                 result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
-            elif ctx.mode == "strict" and phase_c.sha256 != base_sha256:
+            elif ctx.mode == "strict" and current_sha != base_sha256:
                 result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
             else:
                 os.replace(tmp_name, full_path)
