@@ -154,7 +154,7 @@ def build_glossary_db(
     if output_path.exists():
         output_path.unlink()
 
-    conn = sqlite3.connect(str(output_path))
+    conn = kdedb.connect_writable(output_path)
     conn.executescript(kdedb.GLOSSARY_SCHEMA)
 
     term_map: dict[tuple[str, str, str], GlossaryTerm] = {}

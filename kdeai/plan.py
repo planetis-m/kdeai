@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, MutableMapping, Sequence, TYPE_CHECKING
@@ -722,64 +723,74 @@ def _build_assets(
         examples_mode = AssetMode.OFF
         glossary_mode = AssetMode.OFF
 
-    workspace_conn, reference_conn = _open_tm_connections(
-        project_root=project_root,
-        project_id=project_id,
-        config_hash=config_hash,
-        config=config,
-        cache=cache,
-    )
+    with ExitStack() as stack:
+        workspace_conn, reference_conn = _open_tm_connections(
+            project_root=project_root,
+            project_id=project_id,
+            config_hash=config_hash,
+            config=config,
+            cache=cache,
+        )
+        if workspace_conn is not None:
+            stack.callback(workspace_conn.close)
+        if reference_conn is not None:
+            stack.callback(reference_conn.close)
 
-    examples_scopes, examples_top_n, examples_default, _eligibility = (
-        config.examples_runtime_settings()
-    )
-    if examples_mode is None:
-        examples_mode = examples_default
+        examples_scopes, examples_top_n, examples_default, _eligibility = (
+            config.examples_runtime_settings()
+        )
+        if examples_mode is None:
+            examples_mode = examples_default
 
-    examples_db = _open_examples(
-        project_root=project_root,
-        project_id=project_id,
-        config_hash=config_hash,
-        embed_policy_hash=embed_policy_hash,
-        lang=lang,
-        cache=cache,
-        examples_mode=examples_mode,
-        examples_scopes=examples_scopes,
-        embedder=embedder,
-        sqlite_vector_path=sqlite_vector_path,
-    )
+        examples_db = _open_examples(
+            project_root=project_root,
+            project_id=project_id,
+            config_hash=config_hash,
+            embed_policy_hash=embed_policy_hash,
+            lang=lang,
+            cache=cache,
+            examples_mode=examples_mode,
+            examples_scopes=examples_scopes,
+            embedder=embedder,
+            sqlite_vector_path=sqlite_vector_path,
+        )
+        if examples_db is not None:
+            stack.callback(examples_db.conn.close)
 
-    glossary_scopes, glossary_max_terms, glossary_default, normalization_id = _glossary_settings(
-        config
-    )
-    if glossary_mode is None:
-        glossary_mode = glossary_default
+        glossary_scopes, glossary_max_terms, glossary_default, normalization_id = _glossary_settings(
+            config
+        )
+        if glossary_mode is None:
+            glossary_mode = glossary_default
 
-    glossary_conn, glossary_matcher = _open_glossary(
-        project_root=project_root,
-        project_id=project_id,
-        config_hash=config_hash,
-        normalization_id=normalization_id,
-        config=config,
-        lang=lang,
-        cache=cache,
-        glossary_mode=glossary_mode,
-        glossary_scopes=glossary_scopes,
-    )
+        glossary_conn, glossary_matcher = _open_glossary(
+            project_root=project_root,
+            project_id=project_id,
+            config_hash=config_hash,
+            normalization_id=normalization_id,
+            config=config,
+            lang=lang,
+            cache=cache,
+            glossary_mode=glossary_mode,
+            glossary_scopes=glossary_scopes,
+        )
+        if glossary_conn is not None:
+            stack.callback(glossary_conn.close)
 
-    return (
-        PlannerAssets(
-            workspace_conn=workspace_conn,
-            reference_conn=reference_conn,
-            examples_db=examples_db if embedder is not None else None,
-            glossary_conn=glossary_conn,
-            glossary_matcher=glossary_matcher,
-            examples_top_n=examples_top_n,
-            glossary_max_terms=glossary_max_terms,
-        ),
-        examples_mode,
-        glossary_mode,
-    )
+        stack.pop_all()
+        return (
+            PlannerAssets(
+                workspace_conn=workspace_conn,
+                reference_conn=reference_conn,
+                examples_db=examples_db if embedder is not None else None,
+                glossary_conn=glossary_conn,
+                glossary_matcher=glossary_matcher,
+                examples_top_n=examples_top_n,
+                glossary_max_terms=glossary_max_terms,
+            ),
+            examples_mode,
+            glossary_mode,
+        )
 
 
 def _collect_glossary(
