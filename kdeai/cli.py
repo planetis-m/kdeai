@@ -108,13 +108,6 @@ def _next_pointer_id(pointer_path: Path, key: str) -> int:
     return pointer_id + 1
 
 
-def _next_glossary_id(pointer_path: Path, glossary_dir: Path) -> int:
-    glossary_id = _next_pointer_id(pointer_path, "glossary_id")
-    while (glossary_dir / f"glossary.{glossary_id}.sqlite").exists():
-        glossary_id += 1
-    return glossary_id
-
-
 def _examples_embed_policy(config: Config) -> EmbeddingPolicy:
     return config.prompt.examples.embedding_policy
 
@@ -351,7 +344,7 @@ def plan(
                 path_casefold=path_casefold,
                 builder=builder,
                 config=config,
-                run_llm=False,
+                run_llm=True,
             )
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
@@ -797,21 +790,26 @@ def examples_build(
                 "snapshot_id": int(pointer.get("snapshot_id", 0)),
             }
 
-        meta_db = kdeexamples.open_examples_db(
-            output_path,
-            project_id=str(project.project_data["project_id"]),
-            config_hash=config.config_hash,
-            embed_policy_hash=config.embed_policy_hash,
-            sqlite_vector_path=sqlite_vector_path,
-        )
-        meta = dict(meta_db.meta)
-        meta_db.conn.close()
+        meta = {}
+        try:
+            meta_db = kdeexamples.open_examples_db(
+                output_path,
+                project_id=str(project.project_data["project_id"]),
+                config_hash=config.config_hash,
+                embed_policy_hash=config.embed_policy_hash,
+                sqlite_vector_path=sqlite_vector_path,
+            )
+            meta = dict(meta_db.meta)
+            meta_db.conn.close()
+        except Exception:
+            meta = {}
+        created_at = meta.get("created_at") or datetime.now(timezone.utc).isoformat()
         pointer_payload = {
             "ex_id": ex_id,
             "scope": from_scope,
             "lang": target_lang,
             "db_file": output_path.name,
-            "created_at": meta.get("created_at", ""),
+            "created_at": created_at,
             "embed_policy_hash": config.embed_policy_hash,
             "embedding_model_id": meta.get("embedding_model_id", ""),
             "embedding_dim": int(meta.get("embedding_dim", 0)),
@@ -838,24 +836,6 @@ def glossary_build(
     pointer_path = (
         project_root / ".kdeai" / "cache" / "glossary" / "glossary.current.json"
     )
-    if skip_if_current and pointer_path.exists():
-        try:
-            pointer = _read_json(pointer_path, pointer_path.name)
-            db_file = str(pointer.get("db_file", ""))
-            db_path = pointer_path.parent / db_file
-            conn = kdedb.connect_readonly(db_path)
-            kdedb.validate_meta_table(
-                conn,
-                expected_project_id=str(project.project_data["project_id"]),
-                expected_config_hash=config.config_hash,
-                expected_kind=DbKind.GLOSSARY,
-                expected_normalization_id=_glossary_normalization_id(config),
-            )
-            conn.close()
-            typer.echo("Glossary cache already current.")
-            return
-        except Exception:
-            pass
 
     ref_pointer = _read_json(
         project_root
@@ -865,36 +845,77 @@ def glossary_build(
         / "reference.current.json",
         "reference.current.json",
     )
-    db_file = str(ref_pointer.get("db_file", ""))
-    db_path = project_root / ".kdeai" / "cache" / "reference" / db_file
+    reference_snapshot_id = int(ref_pointer.get("snapshot_id", 0))
+    reference_db_file = str(ref_pointer.get("db_file", ""))
+    db_path = project_root / ".kdeai" / "cache" / "reference" / reference_db_file
     reference_conn = kdedb.connect_readonly(db_path)
     try:
-        glossary_id = _next_glossary_id(pointer_path, pointer_path.parent)
         output_path = (
             project_root
             / ".kdeai"
             / "cache"
             / "glossary"
-            / f"glossary.{glossary_id}.sqlite"
+            / f"glossary.{reference_snapshot_id}.sqlite"
         )
+        if skip_if_current and pointer_path.exists():
+            try:
+                pointer = _read_json(pointer_path, pointer_path.name)
+                db_file = str(pointer.get("db_file", ""))
+                pointer_snapshot_id = int(pointer.get("snapshot_id", 0))
+                db_path = pointer_path.parent / db_file
+                if (
+                    pointer_snapshot_id == reference_snapshot_id
+                    and db_file == output_path.name
+                    and db_path.exists()
+                ):
+                    conn = kdedb.connect_readonly(db_path)
+                    kdedb.validate_meta_table(
+                        conn,
+                        expected_project_id=str(project.project_data["project_id"]),
+                        expected_config_hash=config.config_hash,
+                        expected_kind=DbKind.GLOSSARY,
+                        expected_normalization_id=_glossary_normalization_id(config),
+                    )
+                    conn.close()
+                    typer.echo("Glossary cache already current.")
+                    return
+            except Exception:
+                pass
+        build_path = output_path
+        if output_path.exists():
+            build_path = output_path.with_suffix(
+                f"{output_path.suffix}.new"
+            )
         kdeglossary_path = kdeglo.build_glossary_db(
             reference_conn,
-            output_path=output_path,
+            output_path=build_path,
             config=config,
             project_id=str(project.project_data["project_id"]),
             config_hash=config.config_hash,
         )
     finally:
         reference_conn.close()
+    if kdeglossary_path != output_path:
+        kdeglossary_path.replace(output_path)
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    try:
+        conn = kdedb.connect_readonly(output_path)
+        try:
+            meta = kdedb.read_meta(conn)
+        finally:
+            conn.close()
+        created_at = meta.get("created_at") or created_at
+    except Exception:
+        created_at = created_at
 
     pointer_payload = {
-        "glossary_id": glossary_id,
-        "snapshot_id": int(ref_pointer.get("snapshot_id", 0)),
-        "db_file": kdeglossary_path.name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "snapshot_id": reference_snapshot_id,
+        "db_file": output_path.name,
+        "created_at": created_at,
         "source_snapshot": {
             "kind": DbKind.REFERENCE_TM,
-            "snapshot_id": int(ref_pointer.get("snapshot_id", 0)),
+            "snapshot_id": reference_snapshot_id,
         },
     }
     _write_json_atomic(pointer_path, pointer_payload)

@@ -196,6 +196,18 @@ def _translation_payload(
     return {"msgstr": translated_text, "msgstr_plural": {}}
 
 
+def _has_translation_payload(translation: object) -> bool:
+    if not isinstance(translation, Mapping):
+        return False
+    msgstr = str(translation.get("msgstr", "")).strip()
+    msgstr_plural = translation.get("msgstr_plural")
+    if msgstr:
+        return True
+    if isinstance(msgstr_plural, Mapping):
+        return any(str(value).strip() for value in msgstr_plural.values())
+    return False
+
+
 def batch_translate(
     entries: Iterable[MutableMapping[str, object]],
     config: Config,
@@ -212,7 +224,9 @@ def batch_translate(
     for entry in entries:
         if not isinstance(entry, MutableMapping):
             continue
-        if str(entry.get("action", "")) != PlanAction.NEEDS_LLM:
+        if str(entry.get("action", "")) != PlanAction.LLM:
+            continue
+        if _has_translation_payload(entry.get("translation")):
             continue
         prompt_payload = build_prompt_payload(entry, target_lang=normalized_lang)
         prediction = translator(prompt_payload)
@@ -253,7 +267,9 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
         for entry in entries:
             if not isinstance(entry, MutableMapping):
                 continue
-            if str(entry.get("action", "")) != PlanAction.NEEDS_LLM:
+            if str(entry.get("action", "")) != PlanAction.LLM:
+                continue
+            if _has_translation_payload(entry.get("translation")):
                 continue
             prompt_payload = build_prompt_payload(entry, target_lang=target_lang)
             prediction = translator(prompt_payload)

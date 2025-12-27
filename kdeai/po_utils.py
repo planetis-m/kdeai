@@ -65,6 +65,17 @@ def can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> bo
     raise ValueError(f"unsupported overwrite mode: {overwrite}")
 
 
+def ensure_ai_flag_in_markers(
+    marker_flags: Iterable[str],
+    ai_flag: str,
+) -> list[str]:
+    """Return marker_flags with ai_flag included for state_hash computation."""
+    flags = list(marker_flags)
+    if ai_flag not in flags:
+        flags.append(ai_flag)
+    return flags
+
+
 def marker_settings_from_config(config: Config) -> tuple[list[str], list[str], str, str, str]:
     prefixes = config.markers.comment_prefixes
     ordered = [prefixes.tool, prefixes.ai, prefixes.tm, prefixes.review]

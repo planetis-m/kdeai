@@ -83,40 +83,40 @@ def test_batch_translate_plan_updates_needs_llm_entries() -> None:
             {
                 "file_path": "locale/de.po",
                 "entries": [
-                    {
-                        "msgctxt": "",
-                        "msgid": "File",
-                        "msgid_plural": "",
-                        "action": "needs_llm",
-                        "prompt": {
-                            "source_context": "",
-                            "source_text": "File",
-                            "plural_text": "",
-                            "target_lang": "de",
-                            "glossary_context": "",
-                            "few_shot_examples": "",
+                        {
+                            "msgctxt": "",
+                            "msgid": "File",
+                            "msgid_plural": "",
+                            "action": "llm",
+                            "prompt": {
+                                "source_context": "",
+                                "source_text": "File",
+                                "plural_text": "",
+                                "target_lang": "de",
+                                "glossary_context": "",
+                                "few_shot_examples": "",
+                            },
+                            "flags": {"add": ["keep"], "remove": ["old"]},
+                            "comments": {
+                                "remove_prefixes": ["KDEAI:"],
+                                "ensure_lines": ["KDEAI-AI: model=old"],
+                                "append": "",
+                            },
                         },
-                        "flags": {"add": ["keep"], "remove": ["old"]},
-                        "comments": {
-                            "remove_prefixes": ["KDEAI:"],
-                            "ensure_lines": ["KDEAI-AI: model=old"],
-                            "append": "",
+                        {
+                            "msgctxt": "",
+                            "msgid": "Files",
+                            "msgid_plural": "Files",
+                            "action": "llm",
+                            "prompt": {
+                                "source_context": "",
+                                "source_text": "Files",
+                                "plural_text": "Files",
+                                "target_lang": "de",
+                                "glossary_context": "",
+                                "few_shot_examples": "",
+                            },
                         },
-                    },
-                    {
-                        "msgctxt": "",
-                        "msgid": "Files",
-                        "msgid_plural": "Files",
-                        "action": "needs_llm",
-                        "prompt": {
-                            "source_context": "",
-                            "source_text": "Files",
-                            "plural_text": "Files",
-                            "target_lang": "de",
-                            "glossary_context": "",
-                            "few_shot_examples": "",
-                        },
-                    },
                     {
                         "msgctxt": "",
                         "msgid": "Skip",
@@ -191,18 +191,18 @@ def test_batch_translate_plan_adds_prompt_and_tags_for_needs_llm() -> None:
             {
                 "file_path": "locale/de.po",
                 "entries": [
-                    {
-                        "msgctxt": "",
-                        "msgid": "Save",
-                        "msgid_plural": "",
-                        "action": "needs_llm",
-                        "examples": "ctx:\\nid:Save\\npl:",
-                        "glossary_terms": "Save -> Speichern",
-                    }
-                ],
-            }
-        ],
-    }
+                        {
+                            "msgctxt": "",
+                            "msgid": "Save",
+                            "msgid_plural": "",
+                            "action": "llm",
+                            "examples": "ctx:\\nid:Save\\npl:",
+                            "glossary_terms": "Save -> Speichern",
+                        }
+                    ],
+                }
+            ],
+        }
 
     config = build_config(
         {

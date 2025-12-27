@@ -516,6 +516,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 "KDEAI: ensure-new",
                 "KDEAI-AI: model=x",
                 "KDEAI: append2",
+                "",
             ]
         )
         self.assertEqual(entry.tcomment, expected)
@@ -772,8 +773,19 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(
                 updated_entry.tcomment,
-                "KDEAI: old\nKDEAI-AI: model=x",
+                "KDEAI: old\nKDEAI-AI: model=x\n",
             )
+
+    def test_apply_comments_preserves_trailing_newline(self):
+        entry = polib.POEntry(msgid="File", msgstr="")
+        entry.tcomment = "KDEAI: old\n"
+        remove_prefixes = []
+        ensure_lines = []
+        append = ""
+
+        apply._apply_comments(entry, remove_prefixes, ensure_lines, append)
+
+        self.assertEqual(entry.tcomment, "KDEAI: old\n")
 
     def test_strict_mode_skips_file_on_any_entry_mismatch(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1100,7 +1112,10 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 overwrite="conservative",
             )
             self.assertEqual(result.files_written, [])
-            self.assertEqual(result.errors, [])
+            self.assertEqual(
+                result.errors,
+                ["locale/de.po: unsupported action: needs_llm"],
+            )
             self.assertEqual(result.files_skipped, ["locale/de.po"])
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")

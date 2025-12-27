@@ -124,7 +124,7 @@ def test_translate_includes_glossary_in_prompt(monkeypatch, tmp_path: Path) -> N
 
     def _fake_translate(entries, _config, **_kwargs):
         for entry in entries:
-            if entry.get("action") not in {"llm", "needs_llm"}:
+            if entry.get("action") != "llm":
                 continue
             prompt = entry.get("prompt") or {}
             if not prompt:

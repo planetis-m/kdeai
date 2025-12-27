@@ -38,6 +38,20 @@ class EmbeddingPolicy(_BaseModel):
         lowered = value.lower()
         if value != lowered:
             raise ValueError("embedding_policy.distance must be lower-case")
+        if lowered not in {"cosine", "l2"}:
+            raise ValueError("embedding_policy.distance must be one of: cosine, l2")
+        return lowered
+
+    @field_validator("normalization")
+    @classmethod
+    def _normalization_value(cls, value: str) -> str:
+        lowered = value.lower()
+        if value != lowered:
+            raise ValueError("embedding_policy.normalization must be lower-case")
+        if lowered not in {"none", "l2_normalize"}:
+            raise ValueError(
+                "embedding_policy.normalization must be one of: none, l2_normalize"
+            )
         return lowered
 
     @field_validator("encoding")

@@ -65,9 +65,7 @@ class ApplyContext:
             po_utils.marker_settings_from_config(config)
         )
         # Ensure ai_flag participates in state hash computation.
-        combined_marker_flags = list(marker_flags)
-        if ai_flag not in combined_marker_flags:
-            combined_marker_flags.append(ai_flag)
+        combined_marker_flags = po_utils.ensure_ai_flag_in_markers(marker_flags, ai_flag)
         return cls(
             lang=lang,
             mode=mode,
@@ -199,9 +197,10 @@ def _apply_comments(
 ) -> None:
     original = entry.tcomment or ""
     normalized = original.replace("\r\n", "\n")
-    lines = normalized.split("\n")
-    if lines and lines[-1] == "":
-        lines = lines[:-1]
+    had_trailing_newline = normalized.endswith("\n")
+    if had_trailing_newline:
+        normalized = normalized[:-1]
+    lines = [] if normalized == "" else normalized.split("\n")
 
     filtered: list[str] = []
     ensure_set = {str(line) for line in ensure_lines}
@@ -223,9 +222,9 @@ def _apply_comments(
     if append:
         append_text = str(append)
         append_lines = append_text.split("\n")
-        if append_lines and append_lines[-1] == "":
-            append_lines = append_lines[:-1]
         filtered.extend(append_lines)
+    elif had_trailing_newline:
+        filtered.append("")
 
     entry.tcomment = "\n".join(filtered)
 
@@ -238,6 +237,51 @@ def _set_translation(
 ) -> None:
     entry.msgstr = str(msgstr)
     entry.msgstr_plural = kdestate.canonical_plural_map(msgstr_plural)
+
+
+def _default_flags_and_comments_for_action(
+    action: str,
+    *,
+    config: Config,
+    tm_scope: str | None = None,
+    model_id: str | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    markers = config.markers
+    if action == PlanAction.COPY_TM:
+        tm_cfg = config.apply.tagging.tm_copy
+        add_flags = list(tm_cfg.add_flags)
+        if tm_cfg.add_ai_flag:
+            add_flags.append(markers.ai_flag)
+        comment_prefix_key = str(tm_cfg.comment_prefix_key or "tm")
+        comment_prefixes = markers.comment_prefixes
+        comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.tm)
+        scope_value = str(tm_scope or "unknown")
+        ensured_line = f"{comment_prefix} copied_from={scope_value}"
+        flags = {"add": add_flags, "remove": []}
+        comments = {
+            "remove_prefixes": [comment_prefix],
+            "ensure_lines": [ensured_line],
+            "append": "",
+        }
+        return flags, comments
+    if action == PlanAction.LLM:
+        llm_cfg = config.apply.tagging.llm
+        add_flags = list(llm_cfg.add_flags)
+        if llm_cfg.add_ai_flag:
+            add_flags.append(markers.ai_flag)
+        comment_prefix_key = str(llm_cfg.comment_prefix_key or "ai")
+        comment_prefixes = markers.comment_prefixes
+        comment_prefix = getattr(comment_prefixes, comment_prefix_key, comment_prefixes.ai)
+        resolved_model_id = str(model_id or config.prompt.generation_model_id or "unknown")
+        ensured_line = f"{comment_prefix} model={resolved_model_id}"
+        flags = {"add": add_flags, "remove": []}
+        comments = {
+            "remove_prefixes": [comment_prefix],
+            "ensure_lines": [ensured_line],
+            "append": "",
+        }
+        return flags, comments
+    return {"add": [], "remove": []}, {"remove_prefixes": [], "ensure_lines": [], "append": ""}
 
 
 def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
@@ -376,6 +420,8 @@ def apply_plan_to_file(
     plan_items: list,
     *,
     ctx: ApplyContext,
+    config: Config,
+    model_id: str,
     full_path: Path,
     lock_path: Path,
     base_sha256: str,
@@ -391,7 +437,22 @@ def apply_plan_to_file(
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     po_file = _load_po_from_bytes(phase_a.bytes)
-    entry_map = {_entry_key(entry): entry for entry in po_file if entry.msgid != "" and not entry.obsolete}
+    entry_map: dict[tuple[str, str, str], polib.POEntry] = {}
+    duplicate_keys: list[tuple[str, str, str]] = []
+    for entry in po_file:
+        if entry.msgid == "" or entry.obsolete:
+            continue
+        key = _entry_key(entry)
+        if key in entry_map:
+            duplicate_keys.append(key)
+            continue
+        entry_map[key] = entry
+    if duplicate_keys:
+        key = duplicate_keys[0]
+        file_errors = [
+            f"{file_path}: duplicate entry key: msgctxt={key[0]!r} msgid={key[1]!r} msgid_plural={key[2]!r}"
+        ]
+        return ApplyFileResult(file_path, False, True, 0, file_errors, [], [])
 
     file_errors: list[str] = []
     to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
@@ -404,8 +465,6 @@ def apply_plan_to_file(
                 file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
             return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
         action = str(entry_item.get("action", ""))
-        if action == PlanAction.NEEDS_LLM:
-            continue
         if action not in {PlanAction.COPY_TM, PlanAction.LLM}:
             if action:
                 file_errors.append(f"{file_path}: unsupported action: {action}")
@@ -445,15 +504,18 @@ def apply_plan_to_file(
             file_warnings.append(f"{file_path}: skipped (strict): {reason}")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
-    applied_entries: list[polib.POEntry] = []
-    applied_in_file = 0
-    plural_forms = po_file.metadata.get("Plural-Forms")
+    # Filter to entries that pass overwrite policy
+    applicable: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     for entry_item, entry, action in to_apply:
         current_non_empty = _has_non_empty_translation(entry)
         reviewed = _is_reviewed(entry, ctx.review_prefix)
-        if not _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
-            continue
+        if _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
+            applicable.append((entry_item, entry, action))
 
+    applied_entries: list[polib.POEntry] = []
+    applied_in_file = 0
+    plural_forms = po_file.metadata.get("Plural-Forms")
+    for entry_item, entry, action in applicable:
         translation = entry_item.get("translation")
         msgstr = translation.get("msgstr", "")
         msgstr_plural = translation.get("msgstr_plural", {})
@@ -472,24 +534,32 @@ def apply_plan_to_file(
     if file_errors:
         return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
 
-    for entry_item, entry, action in to_apply:
-        current_non_empty = _has_non_empty_translation(entry)
-        reviewed = _is_reviewed(entry, ctx.review_prefix)
-        if not _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
-            continue
-
+    for entry_item, entry, action in applicable:
         translation = entry_item.get("translation")
         msgstr = translation.get("msgstr", "")
         msgstr_plural = translation.get("msgstr_plural", {})
         _set_translation(entry, msgstr=msgstr, msgstr_plural=msgstr_plural)
 
         flags = entry_item.get("flags")
+        comments = entry_item.get("comments")
+        if flags is None or comments is None:
+            tm_scope = entry_item.get("tm_scope") if action == PlanAction.COPY_TM else None
+            default_flags, default_comments = _default_flags_and_comments_for_action(
+                action,
+                config=config,
+                tm_scope=str(tm_scope) if tm_scope is not None else None,
+                model_id=model_id,
+            )
+            if flags is None:
+                flags = default_flags
+            if comments is None:
+                comments = default_comments
+
         if flags is not None:
             add_flags = flags.get("add", [])
             remove_flags = flags.get("remove", [])
             _apply_flags(entry, add_flags, remove_flags)
 
-        comments = entry_item.get("comments")
         if comments is not None:
             remove_prefixes = comments.get("remove_prefixes", [])
             ensure_lines = comments.get("ensure_lines", [])
@@ -574,6 +644,7 @@ def apply_plan(
     marker_flags, comment_prefixes, review_prefix, ai_prefix, ai_flag = (
         _marker_settings_from_config(config)
     )
+    model_id = str(config.prompt.generation_model_id or "unknown")
     placeholder_patterns = list(config.apply.validation_patterns)
     compiled_placeholder_patterns = [re.compile(pattern) for pattern in placeholder_patterns]
     ctx = ApplyContext.from_config(
@@ -679,6 +750,8 @@ def apply_plan(
                 file_path,
                 entries,
                 ctx=ctx,
+                config=config,
+                model_id=model_id,
                 full_path=full_path,
                 lock_path=lock_path,
                 base_sha256=base_sha256,

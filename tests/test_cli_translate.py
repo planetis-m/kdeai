@@ -116,7 +116,7 @@ def test_translate_skips_nonempty_entries(monkeypatch, tmp_path: Path) -> None:
     def _fake_translate(entries, _config, **_kwargs):
         nplurals = _nplurals_from_file(po_path)
         for entry in entries:
-            if entry.get("action") not in {"llm", "needs_llm"}:
+            if entry.get("action") != "llm":
                 continue
             msgid_plural = str(entry.get("msgid_plural", ""))
             if msgid_plural:
@@ -172,6 +172,15 @@ def test_plan_apply_strict_skips_when_file_changes(monkeypatch, tmp_path: Path) 
 
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
+
+    def _fake_translate(entries, _config, **_kwargs):
+        for entry in entries:
+            if entry.get("action") != "llm":
+                continue
+            entry["translation"] = {"msgstr": "el-text", "msgstr_plural": {}}
+        return entries
+
+    monkeypatch.setattr(kdellm, "batch_translate", _fake_translate)
 
     plan_path = tmp_path / "plan.json"
     result = runner.invoke(
@@ -235,7 +244,7 @@ def test_translate_adds_examples_to_prompt(monkeypatch, tmp_path: Path) -> None:
         examples_seen = 0
         nplurals = _nplurals_from_file(po_path)
         for entry in entries:
-            if entry.get("action") not in {"llm", "needs_llm"}:
+            if entry.get("action") != "llm":
                 continue
             llm_entries += 1
             prompt = entry.get("prompt") or {}

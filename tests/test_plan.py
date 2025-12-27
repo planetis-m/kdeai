@@ -211,7 +211,7 @@ class TestPlanBuilderBuildDraft(unittest.TestCase):
                 builder.close()
         entries = plan["entries"]
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["action"], "needs_llm")
+        self.assertEqual(entries[0]["action"], "llm")
         self.assertEqual(entries[0]["examples"], "")
 
     def test_build_draft_auto_examples_with_embedder_without_sqlite_vector(self):
@@ -238,7 +238,7 @@ class TestPlanBuilderBuildDraft(unittest.TestCase):
                 builder.close()
         entries = plan["entries"]
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["action"], "needs_llm")
+        self.assertEqual(entries[0]["action"], "llm")
         self.assertEqual(entries[0]["examples"], "")
 
     def test_build_draft_required_examples_without_sqlite_vector_fails(self):

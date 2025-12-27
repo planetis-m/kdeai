@@ -129,12 +129,6 @@ class PlanBuilder:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-    def _marker_flags_for_state_hash(self) -> list[str]:
-        marker_flags = list(self.marker_flags)
-        if self.ai_flag not in marker_flags:
-            marker_flags.append(self.ai_flag)
-        return marker_flags
-
     def build_draft(
         self,
         file_path: str,
@@ -145,7 +139,7 @@ class PlanBuilder:
         skipped_overwrite = 0
         tm_entries = 0
         llm_entries = 0
-        marker_flags = self._marker_flags_for_state_hash()
+        marker_flags = po_utils.ensure_ai_flag_in_markers(self.marker_flags, self.ai_flag)
         comment_prefixes = list(self.comment_prefixes)
 
         for entry in source_entries:
@@ -186,6 +180,7 @@ class PlanBuilder:
                         "msgid_plural": msgid_plural,
                         "base_state_hash": base_state_hash,
                         "action": PlanAction.COPY_TM,
+                        "tm_scope": tm_candidate.scope,
                         "translation": {
                             "msgstr": tm_candidate.msgstr,
                             "msgstr_plural": tm_candidate.msgstr_plural,
@@ -219,7 +214,7 @@ class PlanBuilder:
                     "msgid": msgid,
                     "msgid_plural": msgid_plural,
                     "base_state_hash": base_state_hash,
-                    "action": PlanAction.NEEDS_LLM,
+                    "action": PlanAction.LLM,
                     "translation": {"msgstr": "", "msgstr_plural": {}},
                     "examples": kdeprompt.examples_context(examples),
                     "glossary_terms": kdeprompt.glossary_context(glossary_matches),
@@ -272,7 +267,7 @@ def generate_plan_for_file(
         needs_llm = [
             entry
             for entry in entries
-            if isinstance(entry, MutableMapping) and entry.get("action") == PlanAction.NEEDS_LLM
+            if isinstance(entry, MutableMapping) and entry.get("action") == PlanAction.LLM
         ]
     else:
         needs_llm = []

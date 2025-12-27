@@ -32,7 +32,6 @@ class PlanAction:
 
     COPY_TM = "copy_tm"
     LLM = "llm"
-    NEEDS_LLM = "needs_llm"
 
 
 # Schema versions
