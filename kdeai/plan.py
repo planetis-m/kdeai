@@ -2,17 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, MutableMapping, Sequence, TYPE_CHECKING
+from typing import Callable, Iterable, Literal, Mapping, MutableMapping, Sequence, TYPE_CHECKING
 import json
 import logging
-import os
 import sqlite3
-import sys
 
 import polib
 
 from kdeai import state as kdestate
-from kdeai.config import AssetMode, Config
+from kdeai.config import Config, EmbeddingPolicy
 from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import hash as kdehash
@@ -22,17 +20,125 @@ from kdeai import po_model
 from kdeai import retrieve_examples
 from kdeai import retrieve_tm
 from kdeai import snapshot
-from kdeai.constants import DbKind, PlanAction, TmScope
+from kdeai.constants import (
+    ApplyMode,
+    AssetMode as AssetModeValue,
+    CacheMode as CacheModeValue,
+    DbKind,
+    OverwritePolicy,
+    PlanAction,
+    PostIndex,
+    TmScope,
+)
 from kdeai.tm_types import SessionTmView
 
 PLAN_FORMAT_VERSION = 1
 logger = logging.getLogger(__name__)
+
+CacheModeLiteral = Literal[CacheModeValue.OFF, CacheModeValue.ON]
+ExamplesMode = Literal[AssetModeValue.OFF, AssetModeValue.AUTO, AssetModeValue.REQUIRED]
+GlossaryMode = Literal[AssetModeValue.OFF, AssetModeValue.AUTO, AssetModeValue.REQUIRED]
 
 
 EmbeddingFunc = Callable[[Sequence[str]], Sequence[Sequence[float]]]
 
 if TYPE_CHECKING:
     from kdeai import glossary as kdeglo
+
+
+def build_plan_header(
+    *,
+    project_id: str,
+    config: Config,
+    lang: str,
+    builder: "PlanBuilder",
+    apply_defaults: dict,
+) -> dict:
+    return {
+        "format": PLAN_FORMAT_VERSION,
+        "project_id": project_id,
+        "config_hash": config.config_hash,
+        "lang": lang,
+        "marker_flags": sorted(builder.marker_flags),
+        "comment_prefixes": sorted(builder.comment_prefixes),
+        "ai_flag": builder.ai_flag,
+        "placeholder_patterns": list(config.apply.validation_patterns),
+        "apply_defaults": {
+            "apply_mode": str(apply_defaults.get("apply_mode", ApplyMode.STRICT)),
+            "overwrite": str(apply_defaults.get("overwrite", OverwritePolicy.CONSERVATIVE)),
+            "post_index": str(apply_defaults.get("post_index", PostIndex.OFF)),
+        },
+    }
+
+
+def examples_mode_from_config(
+    config: Config,
+    override: ExamplesMode | None,
+) -> ExamplesMode:
+    if override is not None:
+        return override
+    return str(config.prompt.examples.mode_default or AssetModeValue.AUTO)
+
+
+def glossary_mode_from_config(
+    config: Config,
+    override: GlossaryMode | None,
+) -> GlossaryMode:
+    if override is not None:
+        return override
+    return str(config.prompt.glossary.mode_default or AssetModeValue.AUTO)
+
+
+def require_embedder(policy: EmbeddingPolicy) -> kdeexamples.EmbeddingFunc:
+    from kdeai.embed_client import compute_embedding
+
+    def _embed(texts: Sequence[str]) -> list[list[float]]:
+        return [compute_embedding(text, policy=policy) for text in texts]
+
+    return _embed
+
+
+def _maybe_embedder(
+    examples_mode: ExamplesMode,
+    policy: EmbeddingPolicy,
+) -> kdeexamples.EmbeddingFunc | None:
+    if examples_mode == AssetModeValue.OFF:
+        return None
+    try:
+        return require_embedder(policy)
+    except Exception:
+        if examples_mode == AssetModeValue.REQUIRED:
+            raise
+        return None
+
+
+def resolve_planner_inputs(
+    *,
+    cache_mode: CacheModeLiteral,
+    examples: ExamplesMode | None,
+    glossary: GlossaryMode | None,
+    config: Config,
+    project_root: Path,
+) -> tuple[ExamplesMode, GlossaryMode, kdeexamples.EmbeddingFunc | None, str | None]:
+    resolved_examples_mode = examples_mode_from_config(config, examples)
+    resolved_glossary_mode = glossary_mode_from_config(config, glossary)
+    if cache_mode == CacheModeValue.OFF and (
+        resolved_examples_mode == AssetModeValue.REQUIRED
+        or resolved_glossary_mode == AssetModeValue.REQUIRED
+    ):
+        raise ValueError("cache=off cannot be combined with required examples/glossary")
+    if cache_mode == CacheModeValue.OFF:
+        return AssetModeValue.OFF, AssetModeValue.OFF, None, None
+    embedder = _maybe_embedder(
+        resolved_examples_mode,
+        config.prompt.examples.embedding_policy,
+    )
+    sqlite_vector_path = None
+    if resolved_examples_mode != AssetModeValue.OFF:
+        candidate = project_root / "vector.so"
+        if candidate.exists():
+            sqlite_vector_path = str(candidate)
+    return resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path
 
 
 def _examples_payload(
@@ -115,16 +221,16 @@ class PlanBuilder:
         project_id: str,
         config: Config,
         lang: str,
-        cache: str = "on",
-        examples_mode: AssetMode | None = None,
-        glossary_mode: AssetMode | None = None,
+        cache: str = CacheModeValue.ON,
+        examples_mode: ExamplesMode | None = None,
+        glossary_mode: GlossaryMode | None = None,
         session_tm: SessionTmView | None = None,
         embedder: EmbeddingFunc | None = None,
         sqlite_vector_path: str | None = None,
     ) -> None:
         self.config = config
         self.lang = lang
-        self.session_tm = session_tm
+        self.session_tm = session_tm if session_tm is not None else {}
         (
             self.marker_flags,
             self.comment_prefixes,
@@ -147,7 +253,6 @@ class PlanBuilder:
         self.examples_mode = effective_examples_mode
         self.glossary_mode = effective_glossary_mode
         self.embedder = embedder
-        self._debug_enabled = bool(os.getenv("KDEAI_DEBUG"))
 
     def close(self) -> None:
         self.assets.close()
@@ -222,7 +327,7 @@ class PlanBuilder:
                 lang=self.lang,
                 eligibility=self.config.prompt.examples.eligibility,
                 review_status_order=self.config.tm.selection.review_status_order,
-                required=self.examples_mode == "required",
+                required=self.examples_mode == AssetModeValue.REQUIRED,
             )
             glossary_matches = _collect_glossary(
                 matcher=self.assets.glossary_matcher,
@@ -244,15 +349,13 @@ class PlanBuilder:
             )
             llm_entries += 1
 
-        if self._debug_enabled:
-            print(
-                "[kdeai][debug] plan",
-                file_path,
-                f"total_entries={total_entries}",
-                f"tm_entries={tm_entries}",
-                f"llm_entries={llm_entries}",
-                file=sys.stderr,
-            )
+        logger.debug(
+            "plan %s: total_entries=%d tm_entries=%d llm_entries=%d",
+            file_path,
+            total_entries,
+            tm_entries,
+            llm_entries,
+        )
 
         return {
             "file_path": file_path,
@@ -298,7 +401,9 @@ def generate_plan_for_file(
 
     if needs_llm:
         from kdeai import llm as kdellm
+        from kdeai.llm_provider import configure_dspy
 
+        configure_dspy(builder.config)
         needs_llm = _sorted_entries(needs_llm)
         kdellm.batch_translate(needs_llm, builder.config, target_lang=builder.lang)
         if any(
@@ -496,20 +601,20 @@ def _build_assets(
     config: Config,
     lang: str,
     cache: str,
-    examples_mode: AssetMode | None,
-    glossary_mode: AssetMode | None,
+    examples_mode: ExamplesMode | None,
+    glossary_mode: GlossaryMode | None,
     embedder: EmbeddingFunc | None,
     sqlite_vector_path: str | None,
-) -> tuple[PlannerAssets, AssetMode, AssetMode]:
+) -> tuple[PlannerAssets, ExamplesMode, GlossaryMode]:
     config_hash = config.config_hash
     embed_policy_hash = config.embed_policy_hash
-    if cache == "off":
-        examples_mode = "off"
-        glossary_mode = "off"
+    if cache == CacheModeValue.OFF:
+        examples_mode = AssetModeValue.OFF
+        glossary_mode = AssetModeValue.OFF
 
     workspace_conn = None
     reference_conn = None
-    if cache != "off":
+    if cache != CacheModeValue.OFF:
         workspace_conn = _open_workspace_tm(
             project_root, project_id=project_id, config_hash=config_hash, config=config
         )
@@ -523,14 +628,18 @@ def _build_assets(
     if examples_mode is None:
         examples_mode = examples_default
 
-    if examples_mode == "required":
+    if examples_mode == AssetModeValue.REQUIRED:
         if embedder is None:
             raise ValueError("examples required but no embedder provided")
         if sqlite_vector_path is None:
             raise ValueError("examples required but sqlite-vector path missing")
 
     examples_db = None
-    if examples_mode != "off" and cache != "off" and embedder is not None:
+    if (
+        examples_mode != AssetModeValue.OFF
+        and cache != CacheModeValue.OFF
+        and embedder is not None
+    ):
         for scope in examples_scopes:
             examples_db = retrieve_examples.open_examples_best_effort(
                 project_root,
@@ -540,12 +649,12 @@ def _build_assets(
                 config_hash=config_hash,
                 embed_policy_hash=embed_policy_hash,
                 sqlite_vector_path=sqlite_vector_path,
-                required=examples_mode == "required",
+                required=examples_mode == AssetModeValue.REQUIRED,
             )
             if examples_db is not None:
                 break
 
-    if examples_mode == "required" and examples_db is None:
+    if examples_mode == AssetModeValue.REQUIRED and examples_db is None:
         raise ValueError("examples required but unavailable")
 
     glossary_scopes, glossary_max_terms, glossary_default, normalization_id = _glossary_settings(
@@ -556,7 +665,7 @@ def _build_assets(
 
     glossary_matcher: object | None = None
     glossary_conn = None
-    if glossary_mode != "off" and cache != "off":
+    if glossary_mode != AssetModeValue.OFF and cache != CacheModeValue.OFF:
         if "reference" in glossary_scopes:
             glossary_conn = _open_glossary_db(
                 project_root,
@@ -578,10 +687,10 @@ def _build_assets(
         except Exception:
             glossary_conn.close()
             glossary_conn = None
-            if glossary_mode == "required":
+            if glossary_mode == AssetModeValue.REQUIRED:
                 raise
             glossary_matcher = None
-    elif glossary_mode == "required":
+    elif glossary_mode == AssetModeValue.REQUIRED:
         raise ValueError("glossary required but unavailable")
 
     return (

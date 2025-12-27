@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from typing import Iterable, Mapping, MutableMapping, Sequence, TypedDict
-import types
 
 import dspy
 
 from kdeai.config import Config
 from kdeai.constants import PlanAction
-from kdeai.llm_provider import configure_dspy
 from kdeai import prompt as kdeprompt
 from kdeai.prompt import PromptData
 
@@ -74,33 +72,14 @@ def build_prompt_payload(
 
     def _examples_context(value: object) -> str:
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            example_objs = []
-            for item in value:
-                if not isinstance(item, Mapping):
-                    continue
-                example_objs.append(
-                    types.SimpleNamespace(
-                        source_text=str(item.get("source_text", "")),
-                        msgstr=str(item.get("msgstr", "")),
-                        msgstr_plural=item.get("msgstr_plural", {}),
-                    )
-                )
-            return kdeprompt.examples_context(example_objs)
+            examples = [item for item in value if isinstance(item, Mapping)]
+            return kdeprompt.examples_context_from_dicts(examples)
         return _text(value)
 
     def _glossary_context(value: object) -> str:
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            matches = []
-            for item in value:
-                if not isinstance(item, Mapping):
-                    continue
-                term = types.SimpleNamespace(
-                    src_surface=str(item.get("src_surface", "")),
-                    tgt_primary=str(item.get("tgt_primary", "")),
-                    tgt_alternates=item.get("tgt_alternates", []),
-                )
-                matches.append(types.SimpleNamespace(term=term))
-            return kdeprompt.glossary_context(matches)
+            matches = [item for item in value if isinstance(item, Mapping)]
+            return kdeprompt.glossary_context_from_dicts(matches)
         return _text(value)
 
     return {
@@ -147,7 +126,7 @@ def batch_translate(
     target_lang: str,
 ) -> list[MutableMapping[str, object]]:
     if dspy.settings.lm is None:
-        configure_dspy(config)
+        raise RuntimeError("DSPy not configured. Call configure_dspy() before batch_translate().")
     translator = KDEAITranslator()
     normalized_lang = str(target_lang or "")
 

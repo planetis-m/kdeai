@@ -46,12 +46,42 @@ def _example_translation(example: ExampleMatch) -> str:
     return ""
 
 
+def _example_translation_from_dict(example: Mapping[str, object]) -> str:
+    msgstr = str(example.get("msgstr", ""))
+    if msgstr.strip():
+        return msgstr
+    msgstr_plural = example.get("msgstr_plural", {})
+    if isinstance(msgstr_plural, Mapping):
+        normalized = {str(k): str(v) for k, v in msgstr_plural.items()}
+        if any(value.strip() for value in normalized.values()):
+            return kdehash.canonical_json(normalized)
+    return ""
+
+
 def _format_examples(examples: Sequence[ExampleMatch]) -> str:
     blocks: list[str] = []
     for idx, example in enumerate(examples, start=1):
         # Keep plan output deterministic by omitting distance or other float metadata.
         source_text = str(getattr(example, "source_text", ""))
         translation = _example_translation(example)
+        blocks.append(
+            "\n".join(
+                [
+                    f"{idx}. Source:",
+                    source_text,
+                    "Translation:",
+                    translation,
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def _format_examples_from_dicts(examples: Sequence[Mapping[str, object]]) -> str:
+    blocks: list[str] = []
+    for idx, example in enumerate(examples, start=1):
+        source_text = str(example.get("source_text", ""))
+        translation = _example_translation_from_dict(example)
         blocks.append(
             "\n".join(
                 [
@@ -102,12 +132,36 @@ def _glossary_context(glossary: Sequence[GlossaryMatch]) -> str:
     return ", ".join(terms)
 
 
+def _glossary_context_from_dicts(glossary: Sequence[Mapping[str, object]]) -> str:
+    terms: list[str] = []
+    for match in glossary:
+        src_surface = str(match.get("src_surface", ""))
+        tgt_primary = str(match.get("tgt_primary", ""))
+        if not src_surface and not tgt_primary:
+            continue
+        if src_surface and tgt_primary:
+            terms.append(f"{src_surface} -> {tgt_primary}")
+        elif src_surface:
+            terms.append(src_surface)
+        else:
+            terms.append(tgt_primary)
+    return ", ".join(terms)
+
+
 def examples_context(examples: Sequence[ExampleMatch]) -> str:
     return _format_examples(examples)
 
 
+def examples_context_from_dicts(examples: Sequence[Mapping[str, object]]) -> str:
+    return _format_examples_from_dicts(examples)
+
+
 def glossary_context(glossary: Sequence[GlossaryMatch]) -> str:
     return _glossary_context(glossary)
+
+
+def glossary_context_from_dicts(glossary: Sequence[Mapping[str, object]]) -> str:
+    return _glossary_context_from_dicts(glossary)
 
 
 def _system_prompt(source_lang: str, target_lang: str) -> str:

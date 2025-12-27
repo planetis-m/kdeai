@@ -205,3 +205,16 @@ def load_config(config_path: Path) -> Config:
 
 def load_config_from_root(root: Path) -> Config:
     return load_config(root / ".kdeai" / "config.json")
+
+
+def examples_embed_policy(config: Config) -> EmbeddingPolicy:
+    return config.prompt.examples.embedding_policy
+
+
+def glossary_normalization_id(config: Config) -> str:
+    return str(config.prompt.glossary.normalization_id or "kdeai_glossary_norm_v1")
+
+
+def workspace_tm_settings(config: Config) -> tuple[int, str]:
+    workspace_cfg = config.sqlite.workspace_tm
+    return int(workspace_cfg.busy_timeout_ms.write), str(workspace_cfg.synchronous).upper()

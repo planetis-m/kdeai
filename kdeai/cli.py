@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Optional, Literal, Sequence, NoReturn
+from typing import Optional, Literal, NoReturn
 import os
 from datetime import datetime, timezone
 
@@ -10,7 +11,12 @@ import typer
 import click
 
 from kdeai import apply as kdeapply
-from kdeai.config import Config, EmbeddingPolicy
+from kdeai.config import (
+    Config,
+    examples_embed_policy,
+    glossary_normalization_id,
+    workspace_tm_settings,
+)
 from kdeai import db as kdedb
 from kdeai import doctor as kdedoctor
 from kdeai import examples as kdeexamples
@@ -23,7 +29,16 @@ from kdeai import po_utils
 from kdeai import reference as kderef
 from kdeai import snapshot
 from kdeai import workspace_tm
-from kdeai.constants import DbKind, TmScope, WORKSPACE_TM_SCHEMA_VERSION
+from kdeai.constants import (
+    ApplyMode,
+    AssetMode,
+    CacheMode,
+    DbKind,
+    OverwritePolicy,
+    PostIndex,
+    TmScope,
+    WORKSPACE_TM_SCHEMA_VERSION,
+)
 from kdeai.project import Project
 
 
@@ -41,12 +56,17 @@ app.add_typer(reference_app, name="reference")
 app.add_typer(examples_app, name="examples")
 app.add_typer(glossary_app, name="glossary")
 
-OnOff = Literal["on", "off"]
-CacheMode = Literal["off", "on"]
-ExamplesMode = Literal["off", "auto", "required"]
-GlossaryMode = Literal["off", "auto", "required"]
-ApplyMode = Literal["strict", "rebase"]
-OverwriteMode = Literal["conservative", "allow-nonempty", "allow-reviewed", "all"]
+OnOff = Literal[PostIndex.ON, PostIndex.OFF]
+CacheModeLiteral = Literal[CacheMode.OFF, CacheMode.ON]
+ExamplesMode = Literal[AssetMode.OFF, AssetMode.AUTO, AssetMode.REQUIRED]
+GlossaryMode = Literal[AssetMode.OFF, AssetMode.AUTO, AssetMode.REQUIRED]
+ApplyModeLiteral = Literal[ApplyMode.STRICT, ApplyMode.REBASE]
+OverwriteModeLiteral = Literal[
+    OverwritePolicy.CONSERVATIVE,
+    OverwritePolicy.ALLOW_NONEMPTY,
+    OverwritePolicy.ALLOW_REVIEWED,
+    OverwritePolicy.ALL,
+]
 ExamplesScope = Literal["workspace", "reference"]
 
 
@@ -82,6 +102,14 @@ def _project_root(ctx: typer.Context) -> Path:
     return Path.cwd()
 
 
+def _load_project(project_root: Path, command_name: str) -> Project:
+    """Load project or exit with descriptive error."""
+    try:
+        return Project.load_or_init(project_root)
+    except Exception as exc:
+        _exit_with_error(f"{command_name} failed: {exc}")
+
+
 _normalize_relpath = po_utils.normalize_relpath
 _relpath_key = po_utils.relpath_key
 
@@ -108,60 +136,11 @@ def _next_pointer_id(pointer_path: Path, key: str) -> int:
     return pointer_id + 1
 
 
-def _examples_embed_policy(config: Config) -> EmbeddingPolicy:
-    return config.prompt.examples.embedding_policy
-
-
-def _require_embedder(policy: EmbeddingPolicy) -> kdeexamples.EmbeddingFunc:
-    from kdeai.embed_client import compute_embedding
-
-    def _embed(texts: Sequence[str]) -> list[list[float]]:
-        return [compute_embedding(text, policy=policy) for text in texts]
-
-    return _embed
-
-
-def _examples_mode_from_config(
-    config: Config,
-    override: ExamplesMode | None,
-) -> ExamplesMode:
-    if override is not None:
-        return override
-    return str(config.prompt.examples.mode_default or "auto")
-
-
-def _glossary_mode_from_config(
-    config: Config,
-    override: GlossaryMode | None,
-) -> GlossaryMode:
-    if override is not None:
-        return override
-    return str(config.prompt.glossary.mode_default or "auto")
-
-
-def _maybe_embedder(
-    examples_mode: ExamplesMode,
-    policy: EmbeddingPolicy,
-) -> kdeexamples.EmbeddingFunc | None:
-    if examples_mode == "off":
-        return None
-    try:
-        return _require_embedder(policy)
-    except Exception:
-        if examples_mode == "required":
-            raise
-        return None
-
-
 def _sqlite_vector_path(project_root: Path) -> str | None:
     candidate = project_root / "vector.so"
     if candidate.exists():
         return str(candidate)
     return None
-
-
-def _glossary_normalization_id(config: Config) -> str:
-    return str(config.prompt.glossary.normalization_id or kdeglo.NORMALIZATION_ID)
 
 
 def _note_cache_write_noop(command_name: str) -> None:
@@ -180,63 +159,7 @@ def _apply_defaults_from_config(
     return {
         "apply_mode": str(apply_mode_default or config.apply.mode_default),
         "overwrite": str(overwrite_default or config.apply.overwrite_default),
-        "post_index": "off",
-    }
-
-
-def _workspace_tm_settings(config: Config) -> tuple[int, str]:
-    workspace_cfg = config.sqlite.workspace_tm
-    return int(workspace_cfg.busy_timeout_ms.write), str(workspace_cfg.synchronous).upper()
-
-
-def _resolve_planner_inputs(
-    *,
-    cache_mode: CacheMode,
-    examples: ExamplesMode | None,
-    glossary: GlossaryMode | None,
-    config: Config,
-    project_root: Path,
-) -> tuple[ExamplesMode, GlossaryMode, kdeexamples.EmbeddingFunc | None, str | None]:
-    resolved_examples_mode = _examples_mode_from_config(config, examples)
-    resolved_glossary_mode = _glossary_mode_from_config(config, glossary)
-    if cache_mode == "off" and (
-        resolved_examples_mode == "required" or resolved_glossary_mode == "required"
-    ):
-        raise ValueError("cache=off cannot be combined with required examples/glossary")
-    if cache_mode == "off":
-        return "off", "off", None, None
-    embedder = _maybe_embedder(
-        resolved_examples_mode,
-        _examples_embed_policy(config),
-    )
-    sqlite_vector_path = (
-        None if resolved_examples_mode == "off" else _sqlite_vector_path(project_root)
-    )
-    return resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path
-
-
-def _build_plan_header(
-    *,
-    project: Project,
-    lang: str,
-    builder: kdeplan.PlanBuilder,
-    apply_defaults: dict,
-) -> dict:
-    config = project.config
-    return {
-        "format": kdeplan.PLAN_FORMAT_VERSION,
-        "project_id": str(project.project_data["project_id"]),
-        "config_hash": config.config_hash,
-        "lang": lang,
-        "marker_flags": sorted(builder.marker_flags),
-        "comment_prefixes": sorted(builder.comment_prefixes),
-        "ai_flag": builder.ai_flag,
-        "placeholder_patterns": list(config.apply.validation_patterns),
-        "apply_defaults": {
-            "apply_mode": str(apply_defaults.get("apply_mode", "strict")),
-            "overwrite": str(apply_defaults.get("overwrite", "conservative")),
-            "post_index": str(apply_defaults.get("post_index", "off")),
-        },
+        "post_index": PostIndex.OFF,
     }
 
 
@@ -250,7 +173,7 @@ def _ensure_workspace_db(
     db_path = project_root / ".kdeai" / "cache" / "workspace.tm.sqlite"
     created = not db_path.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    busy_timeout_ms, synchronous = _workspace_tm_settings(config)
+    busy_timeout_ms, synchronous = workspace_tm_settings(config)
     conn = kdedb.connect_workspace_tm(
         db_path,
         busy_timeout_ms=busy_timeout_ms,
@@ -282,6 +205,59 @@ def _ensure_workspace_db(
     return conn
 
 
+@contextmanager
+def _optional_workspace_db(
+    project_root: Path,
+    *,
+    project_id: str,
+    config_hash: str,
+    config: Config,
+    enabled: bool,
+):
+    """Yield workspace connection if enabled and available, else None."""
+    if not enabled:
+        yield None
+        return
+
+    conn = None
+    try:
+        conn = _ensure_workspace_db(
+            project_root,
+            project_id=project_id,
+            config_hash=config_hash,
+            config=config,
+        )
+        yield conn
+    except Exception as exc:
+        typer.secho(f"Warning: workspace DB unavailable ({exc}).", err=True)
+        yield None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@contextmanager
+def _open_examples_db(
+    path: Path,
+    *,
+    project_id: str,
+    config_hash: str,
+    embed_policy_hash: str,
+    sqlite_vector_path: str | None,
+):
+    db = kdeexamples.open_examples_db(
+        path,
+        project_id=project_id,
+        config_hash=config_hash,
+        embed_policy_hash=embed_policy_hash,
+        sqlite_vector_path=sqlite_vector_path,
+    )
+    try:
+        yield db
+    finally:
+        db.conn.close()
+
+
 @app.callback()
 def main(ctx: typer.Context) -> None:
     project_root = Path.cwd()
@@ -303,25 +279,22 @@ def plan(
     paths: Optional[list[Path]] = typer.Argument(None),
     lang: str = typer.Option(..., "--lang"),
     out: Optional[Path] = typer.Option(None, "--out"),
-    cache: Optional[CacheMode] = typer.Option(None, "--cache"),
+    cache: Optional[CacheModeLiteral] = typer.Option(None, "--cache"),
     cache_write: Optional[OnOff] = typer.Option(None, "--cache-write"),
     examples: Optional[ExamplesMode] = typer.Option(None, "--examples"),
     glossary: Optional[GlossaryMode] = typer.Option(None, "--glossary"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    try:
-        project = Project.load_or_init(project_root)
-        config = project.config
-    except Exception as exc:
-        _exit_with_error(f"Plan failed: {exc}")
-    cache_mode = cache or "on"
-    cache_write_flag = cache_write or "on"
-    if cache_write_flag == "off":
+    project = _load_project(project_root, "Plan")
+    config = project.config
+    cache_mode = cache or CacheMode.ON
+    cache_write_flag = cache_write or CacheMode.ON
+    if cache_write_flag == CacheMode.OFF:
         _note_cache_write_noop("plan")
     try:
         resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
-            _resolve_planner_inputs(
+            kdeplan.resolve_planner_inputs(
                 cache_mode=cache_mode,
                 examples=examples,
                 glossary=glossary,
@@ -340,6 +313,7 @@ def plan(
         config=config,
         lang=lang,
         cache=cache_mode,
+        session_tm={},
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
         embedder=embedder,
@@ -356,8 +330,9 @@ def plan(
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
         apply_cfg = _apply_defaults_from_config(config)
-        plan_payload = _build_plan_header(
-            project=project,
+        plan_payload = kdeplan.build_plan_header(
+            project_id=str(project.project_data["project_id"]),
+            config=config,
             lang=lang,
             builder=builder,
             apply_defaults=apply_cfg,
@@ -377,50 +352,38 @@ def plan(
 @app.command()
 def apply(
     plan_path: Path = typer.Argument(...),
-    apply_mode: Optional[ApplyMode] = typer.Option(None, "--apply-mode"),
-    overwrite: Optional[OverwriteMode] = typer.Option(None, "--overwrite"),
-    post_index: OnOff = typer.Option("off", "--post-index"),
+    apply_mode: Optional[ApplyModeLiteral] = typer.Option(None, "--apply-mode"),
+    overwrite: Optional[OverwriteModeLiteral] = typer.Option(None, "--overwrite"),
+    post_index: OnOff = typer.Option(PostIndex.OFF, "--post-index"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
     plan = kdeplan.load_plan(plan_path)
-    post_index_flag = post_index == "on"
-    workspace_conn = None
-    try:
-        project = Project.load_or_init(project_root)
-        config = project.config
-    except Exception as exc:
-        _exit_with_error(f"Apply failed: {exc}")
+    post_index_flag = post_index == PostIndex.ON
+    project = _load_project(project_root, "Apply")
+    config = project.config
 
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
-    if post_index_flag:
-        try:
-            workspace_conn = _ensure_workspace_db(
-                project_root,
-                project_id=project_id,
-                config_hash=config.config_hash,
-                config=config,
-            )
-        except Exception as exc:
-            typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
-            post_index_flag = False
-
-    result = kdeapply.apply_plan(
-        plan,
-        project_root=project_root,
+    with _optional_workspace_db(
+        project_root,
         project_id=project_id,
-        path_casefold=path_casefold,
+        config_hash=config.config_hash,
         config=config,
-        apply_mode=apply_mode,
-        overwrite=overwrite,
-        post_index=post_index_flag,
-        workspace_conn=workspace_conn,
-    )
-
-    if workspace_conn is not None:
-        workspace_conn.close()
+        enabled=post_index_flag,
+    ) as workspace_conn:
+        result = kdeapply.apply_plan(
+            plan,
+            project_root=project_root,
+            project_id=project_id,
+            path_casefold=path_casefold,
+            config=config,
+            apply_mode=apply_mode,
+            overwrite=overwrite,
+            post_index=post_index_flag,
+            workspace_conn=workspace_conn,
+        )
 
     if result.errors:
         error_message = "\nError: ".join(result.errors)
@@ -441,27 +404,24 @@ def translate(
     paths: Optional[list[Path]] = typer.Argument(None),
     lang: str = typer.Option(..., "--lang"),
     out: Optional[Path] = typer.Option(None, "--out"),
-    apply_mode: Optional[ApplyMode] = typer.Option(None, "--apply-mode"),
-    overwrite: Optional[OverwriteMode] = typer.Option(None, "--overwrite"),
-    cache: Optional[CacheMode] = typer.Option(None, "--cache"),
+    apply_mode: Optional[ApplyModeLiteral] = typer.Option(None, "--apply-mode"),
+    overwrite: Optional[OverwriteModeLiteral] = typer.Option(None, "--overwrite"),
+    cache: Optional[CacheModeLiteral] = typer.Option(None, "--cache"),
     cache_write: Optional[OnOff] = typer.Option(None, "--cache-write"),
     examples: Optional[ExamplesMode] = typer.Option(None, "--examples"),
     glossary: Optional[GlossaryMode] = typer.Option(None, "--glossary"),
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    try:
-        project = Project.load_or_init(project_root)
-        config = project.config
-    except Exception as exc:
-        _exit_with_error(f"Translate failed: {exc}")
-    cache_mode = cache or "on"
-    cache_write_flag = cache_write or "on"
-    if cache_write_flag == "off":
+    project = _load_project(project_root, "Translate")
+    config = project.config
+    cache_mode = cache or CacheMode.ON
+    cache_write_flag = cache_write or CacheMode.ON
+    if cache_write_flag == CacheMode.OFF:
         _note_cache_write_noop("translate")
     try:
         resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
-            _resolve_planner_inputs(
+            kdeplan.resolve_planner_inputs(
                 cache_mode=cache_mode,
                 examples=examples,
                 glossary=glossary,
@@ -497,8 +457,9 @@ def translate(
         sqlite_vector_path=sqlite_vector_path,
     ) as builder:
         session_tm = builder.session_tm
-        plan_header = _build_plan_header(
-            project=project,
+        plan_header = kdeplan.build_plan_header(
+            project_id=str(project.project_data["project_id"]),
+            config=config,
             lang=lang,
             builder=builder,
             apply_defaults=apply_defaults,
@@ -561,21 +522,19 @@ def index(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    try:
-        project = Project.load_or_init(project_root)
-        config = project.config
-    except Exception as exc:
-        _exit_with_error(f"Index failed: {exc}")
+    project = _load_project(project_root, "Index")
+    config = project.config
 
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
-    conn = _ensure_workspace_db(
-        project_root,
-        project_id=project_id,
-        config_hash=config.config_hash,
-        config=config,
-    )
-    try:
+    with closing(
+        _ensure_workspace_db(
+            project_root,
+            project_id=project_id,
+            config_hash=config.config_hash,
+            config=config,
+        )
+    ) as conn:
         for path in _iter_po_paths(project_root, paths):
             relpath = _normalize_relpath(project_root, path)
             relpath_key = _relpath_key(relpath, path_casefold)
@@ -607,8 +566,6 @@ def index(
                 if strict:
                     _exit_with_error(message)
                 typer.secho(f"Warning: {message}", err=True)
-    finally:
-        conn.close()
 
     typer.echo("Workspace TM index updated.")
 
@@ -620,9 +577,9 @@ def reference_build(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
+    project = _load_project(project_root, "Reference build")
+    config = project.config
     try:
-        project = Project.load_or_init(project_root)
-        config = project.config
         snapshot = kderef.build_reference_snapshot(
             project_root,
             project_id=str(project.project_data["project_id"]),
@@ -658,11 +615,8 @@ def examples_build(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    try:
-        project = Project.load_or_init(project_root)
-        config = project.config
-    except Exception as exc:
-        _exit_with_error(f"Examples build failed: {exc}")
+    project = _load_project(project_root, "Examples build")
+    config = project.config
 
     if lang == "all":
         targets = config.languages.targets
@@ -707,7 +661,7 @@ def examples_build(
                 pass
 
         try:
-            embedder = _require_embedder(_examples_embed_policy(config))
+            embedder = kdeplan.require_embedder(examples_embed_policy(config))
         except Exception as exc:
             _exit_with_error(str(exc))
         output_dir = (
@@ -717,13 +671,14 @@ def examples_build(
         output_path = output_dir / f"examples.{from_scope}.{target_lang}.{ex_id}.sqlite"
 
         if from_scope == TmScope.WORKSPACE:
-            conn = _ensure_workspace_db(
-                project_root,
-                project_id=str(project.project_data["project_id"]),
-                config_hash=config.config_hash,
-                config=config,
-            )
-            try:
+            with closing(
+                _ensure_workspace_db(
+                    project_root,
+                    project_id=str(project.project_data["project_id"]),
+                    config_hash=config.config_hash,
+                    config=config,
+                )
+            ) as conn:
                 kdeexamples.build_examples_db_from_workspace(
                     conn,
                     output_path=output_path,
@@ -735,8 +690,6 @@ def examples_build(
                     embedder=embedder,
                     sqlite_vector_path=sqlite_vector_path,
                 )
-            finally:
-                conn.close()
             source_snapshot = {"kind": DbKind.WORKSPACE_TM, "snapshot_id": 0}
         else:
             pointer = _read_json(
@@ -751,8 +704,7 @@ def examples_build(
             db_path = (
                 project_root / ".kdeai" / "cache" / "reference" / db_file
             )
-            reference_conn = kdedb.connect_readonly(db_path)
-            try:
+            with closing(kdedb.connect_readonly(db_path)) as reference_conn:
                 kdeexamples.build_examples_db_from_reference(
                     reference_conn,
                     output_path=output_path,
@@ -764,28 +716,22 @@ def examples_build(
                     embedder=embedder,
                     sqlite_vector_path=sqlite_vector_path,
                 )
-            finally:
-                reference_conn.close()
             source_snapshot = {
                 "kind": DbKind.REFERENCE_TM,
                 "snapshot_id": int(pointer.get("snapshot_id", 0)),
             }
 
-        meta_db = None
         try:
-            meta_db = kdeexamples.open_examples_db(
+            with _open_examples_db(
                 output_path,
                 project_id=str(project.project_data["project_id"]),
                 config_hash=config.config_hash,
                 embed_policy_hash=config.embed_policy_hash,
                 sqlite_vector_path=sqlite_vector_path,
-            )
-            meta = dict(meta_db.meta)
+            ) as meta_db:
+                meta = dict(meta_db.meta)
         except Exception as exc:
             _exit_with_error(f"Examples build failed: {exc}")
-        finally:
-            if meta_db is not None:
-                meta_db.conn.close()
         created_at = meta.get("created_at") or datetime.now(timezone.utc).isoformat()
         pointer_payload = {
             "ex_id": ex_id,
@@ -794,6 +740,7 @@ def examples_build(
             "db_file": output_path.name,
             "created_at": created_at,
             "embed_policy_hash": config.embed_policy_hash,
+            "require_finite": config.prompt.examples.embedding_policy.require_finite,
             "embedding_model_id": meta.get("embedding_model_id", ""),
             "embedding_dim": int(meta.get("embedding_dim", 0)),
             "embedding_distance": meta.get("embedding_distance", ""),
@@ -811,11 +758,8 @@ def glossary_build(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    try:
-        project = Project.load_or_init(project_root)
-        config = project.config
-    except Exception as exc:
-        _exit_with_error(f"Glossary build failed: {exc}")
+    project = _load_project(project_root, "Glossary build")
+    config = project.config
     pointer_path = (
         project_root / ".kdeai" / "cache" / "glossary" / "glossary.current.json"
     )
@@ -831,73 +775,65 @@ def glossary_build(
     reference_snapshot_id = int(ref_pointer.get("snapshot_id", 0))
     reference_db_file = str(ref_pointer.get("db_file", ""))
     db_path = project_root / ".kdeai" / "cache" / "reference" / reference_db_file
-    reference_conn = kdedb.connect_readonly(db_path)
     try:
-        output_path = (
-            project_root
-            / ".kdeai"
-            / "cache"
-            / "glossary"
-            / f"glossary.{reference_snapshot_id}.sqlite"
-        )
-        if skip_if_current and pointer_path.exists():
-            try:
-                pointer = _read_json(pointer_path, pointer_path.name)
-                db_file = str(pointer.get("db_file", ""))
-                pointer_snapshot_id = int(pointer.get("snapshot_id", 0))
-                db_path = pointer_path.parent / db_file
-                if (
-                    pointer_snapshot_id == reference_snapshot_id
-                    and db_file == output_path.name
-                    and db_path.exists()
-                ):
-                    conn = kdedb.connect_readonly(db_path)
-                    kdedb.validate_meta_table(
-                        conn,
-                        expected_project_id=str(project.project_data["project_id"]),
-                        expected_config_hash=config.config_hash,
-                        expected_kind=DbKind.GLOSSARY,
-                        expected_normalization_id=_glossary_normalization_id(config),
-                    )
-                    conn.close()
-                    typer.echo("Glossary cache already current.")
-                    return
-            except Exception:
-                pass
-        if output_path.exists():
-            _exit_with_error(
-                "Glossary DB already exists for reference snapshot "
-                f"{reference_snapshot_id}. Rebuild reference snapshot or use --skip-if-current."
+        with closing(kdedb.connect_readonly(db_path)) as reference_conn:
+            output_path = (
+                project_root
+                / ".kdeai"
+                / "cache"
+                / "glossary"
+                / f"glossary.{reference_snapshot_id}.sqlite"
             )
-        kdeglo.build_glossary_db(
-            reference_conn,
-            output_path=output_path,
-            config=config,
-            project_id=str(project.project_data["project_id"]),
-            config_hash=config.config_hash,
-        )
-    finally:
-        reference_conn.close()
+            if skip_if_current and pointer_path.exists():
+                try:
+                    pointer = _read_json(pointer_path, pointer_path.name)
+                    db_file = str(pointer.get("db_file", ""))
+                    pointer_snapshot_id = int(pointer.get("snapshot_id", 0))
+                    db_path = pointer_path.parent / db_file
+                    if (
+                        pointer_snapshot_id == reference_snapshot_id
+                        and db_file == output_path.name
+                        and db_path.exists()
+                    ):
+                        with closing(kdedb.connect_readonly(db_path)) as conn:
+                            kdedb.validate_meta_table(
+                                conn,
+                                expected_project_id=str(project.project_data["project_id"]),
+                                expected_config_hash=config.config_hash,
+                                expected_kind=DbKind.GLOSSARY,
+                                expected_normalization_id=glossary_normalization_id(config),
+                            )
+                        typer.echo("Glossary cache already current.")
+                        return
+                except Exception:
+                    pass
+            if output_path.exists():
+                _exit_with_error(
+                    "Glossary DB already exists for reference snapshot "
+                    f"{reference_snapshot_id}. Rebuild reference snapshot or use --skip-if-current."
+                )
+            kdeglo.build_glossary_db(
+                reference_conn,
+                output_path=output_path,
+                config=config,
+                project_id=str(project.project_data["project_id"]),
+                config_hash=config.config_hash,
+            )
 
-    conn = None
-    try:
-        conn = kdedb.connect_readonly(output_path)
-        kdedb.validate_meta_table(
-            conn,
-            expected_project_id=str(project.project_data["project_id"]),
-            expected_config_hash=config.config_hash,
-            expected_kind=DbKind.GLOSSARY,
-            expected_normalization_id=_glossary_normalization_id(config),
-        )
-        meta = kdedb.read_meta(conn)
-        created_at = meta.get("created_at")
-        if not created_at:
-            raise ValueError("Missing created_at in glossary meta")
+        with closing(kdedb.connect_readonly(output_path)) as conn:
+            kdedb.validate_meta_table(
+                conn,
+                expected_project_id=str(project.project_data["project_id"]),
+                expected_config_hash=config.config_hash,
+                expected_kind=DbKind.GLOSSARY,
+                expected_normalization_id=glossary_normalization_id(config),
+            )
+            meta = kdedb.read_meta(conn)
+            created_at = meta.get("created_at")
+            if not created_at:
+                raise ValueError("Missing created_at in glossary meta")
     except Exception as exc:
         _exit_with_error(f"Glossary build failed: {exc}")
-    finally:
-        if conn is not None:
-            conn.close()
 
     pointer_payload = {
         "snapshot_id": reference_snapshot_id,
@@ -935,9 +871,9 @@ def gc(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
+    project = _load_project(project_root, "GC")
+    config = project.config
     try:
-        project = Project.load_or_init(project_root)
-        config = project.config
         report = kdegc.gc_workspace_tm(
             project_root,
             project_id=str(project.project_data["project_id"]),

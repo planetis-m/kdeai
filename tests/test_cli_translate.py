@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from conftest import build_config_dict
 from kdeai.cli import app
 from kdeai import llm as kdellm
+from kdeai import plan as kdeplan
 import kdeai.cli as kdecli
 
 
@@ -231,7 +232,7 @@ def test_translate_adds_examples_to_prompt(monkeypatch, tmp_path: Path) -> None:
             embeddings.append([float(seed), float(seed + 1), float(seed + 2)])
         return embeddings
 
-    monkeypatch.setattr(kdecli, "_require_embedder", lambda policy: _fake_embedder)
+    monkeypatch.setattr(kdeplan, "require_embedder", lambda policy: _fake_embedder)
 
     result = runner.invoke(app, ["examples", "build", "--from", "workspace", "--lang", "el"])
     assert result.exit_code == 0
