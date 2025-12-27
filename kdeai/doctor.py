@@ -11,6 +11,7 @@ from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import glossary as kdeglo
 from kdeai import locks
+from kdeai.constants import DbKind, TmScope
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ def _check_workspace_tm(
                 conn,
                 expected_project_id=project_id,
                 expected_config_hash=config_hash,
-                expected_kind="workspace_tm",
+                expected_kind=DbKind.WORKSPACE_TM,
             )
             files = int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
             translations = int(conn.execute("SELECT COUNT(*) FROM translations").fetchone()[0])
@@ -137,7 +138,7 @@ def _check_reference_pointer(
                 conn,
                 expected_project_id=project_id,
                 expected_config_hash=config_hash,
-                expected_kind="reference_tm",
+                expected_kind=DbKind.REFERENCE_TM,
             )
         finally:
             conn.close()
@@ -182,7 +183,7 @@ def _validate_examples_pointer(
     if not isinstance(source_snapshot, dict):
         raise ValueError("examples pointer source_snapshot must be an object")
     _require_keys(source_snapshot, ["kind"], "examples pointer source_snapshot")
-    if str(source_snapshot["kind"]) == "reference_tm":
+    if str(source_snapshot["kind"]) == DbKind.REFERENCE_TM:
         _require_keys(source_snapshot, ["snapshot_id"], "examples pointer source_snapshot")
 
 
@@ -197,7 +198,7 @@ def _check_examples_pointers(
     report: DoctorReport,
     valid_example_paths: list[Path],
 ) -> None:
-    for scope in ("workspace", "reference"):
+    for scope in (TmScope.WORKSPACE, TmScope.REFERENCE):
         examples_dir = project_root / ".kdeai" / "cache" / "examples" / scope
         if not examples_dir.exists():
             continue
@@ -299,7 +300,7 @@ def _check_glossary_pointer(
                 conn,
                 expected_project_id=project_id,
                 expected_config_hash=config_hash,
-                expected_kind="glossary",
+                expected_kind=DbKind.GLOSSARY,
                 expected_normalization_id=normalization_id,
             )
         finally:

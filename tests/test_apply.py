@@ -1,4 +1,5 @@
 import hashlib
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,21 +12,24 @@ from conftest import build_config
 from kdeai import apply
 from kdeai import locks
 from kdeai import plan
-from kdeai import po_utils
 
 
 def _entry_state_hash(entry, *, lang: str, config) -> str:
-    marker_flags, comment_prefixes, _review_prefix, _ai_prefix, ai_flag = (
-        po_utils.marker_settings_from_config(config)
+    compiled_placeholder_patterns = [
+        re.compile(pattern) for pattern in config.apply.validation_patterns
+    ]
+    ctx = apply.ApplyContext.from_config(
+        config,
+        lang=lang,
+        mode="strict",
+        overwrite_policy="conservative",
+        placeholder_patterns=compiled_placeholder_patterns,
     )
-    marker_flags = list(marker_flags)
-    if ai_flag not in marker_flags:
-        marker_flags.append(ai_flag)
     return apply.entry_state_hash(
         entry,
         lang=lang,
-        marker_flags=marker_flags,
-        comment_prefixes=comment_prefixes,
+        marker_flags=ctx.marker_flags,
+        comment_prefixes=ctx.comment_prefixes,
     )
 
 

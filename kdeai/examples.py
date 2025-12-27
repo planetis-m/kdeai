@@ -11,10 +11,16 @@ import sys
 
 from kdeai import db as kdedb
 from kdeai.config import Config, ExamplesEligibility
+from kdeai.constants import (
+    DbKind,
+    EXAMPLES_SCHEMA_VERSION,
+    ReviewStatus,
+    TmScope,
+)
 from kdeai.po_utils import parse_msgstr_plural
 
 
-DEFAULT_MIN_REVIEW_STATUS = "reviewed"
+DEFAULT_MIN_REVIEW_STATUS = ReviewStatus.REVIEWED
 
 
 @dataclass(frozen=True)
@@ -322,7 +328,7 @@ def _build_examples_db(
     conn.executescript(kdedb.EXAMPLES_SCHEMA)
     conn.execute("BEGIN")
     try:
-        include_file_sha256 = source_snapshot_kind == "reference_tm"
+        include_file_sha256 = source_snapshot_kind == DbKind.REFERENCE_TM
         payload = _build_examples_rows(
             rows,
             lang=lang,
@@ -372,8 +378,8 @@ def _build_examples_db(
         )
 
         meta_payload = {
-            "schema_version": "1",
-            "kind": "examples",
+            "schema_version": EXAMPLES_SCHEMA_VERSION,
+            "kind": DbKind.EXAMPLES,
             "project_id": project_id,
             "config_hash": config_hash,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -397,7 +403,7 @@ def _build_examples_db(
             conn,
             expected_project_id=project_id,
             expected_config_hash=config_hash,
-            expected_kind="examples",
+            expected_kind=DbKind.EXAMPLES,
             expected_embed_policy_hash=embed_policy_hash,
         )
         conn.commit()
@@ -426,14 +432,14 @@ def build_examples_db_from_workspace(
         meta,
         expected_project_id=project_id,
         expected_config_hash=config_hash,
-        expected_kind="workspace_tm",
+        expected_kind=DbKind.WORKSPACE_TM,
     )
     rows = _iter_workspace_rows(workspace_conn, lang)
     return _build_examples_db(
         rows,
         output_path=output_path,
-        scope="workspace",
-        source_snapshot_kind="workspace_tm",
+        scope=TmScope.WORKSPACE,
+        source_snapshot_kind=DbKind.WORKSPACE_TM,
         source_snapshot_id=None,
         lang=lang,
         config=config,
@@ -462,7 +468,7 @@ def build_examples_db_from_reference(
         meta,
         expected_project_id=project_id,
         expected_config_hash=config_hash,
-        expected_kind="reference_tm",
+        expected_kind=DbKind.REFERENCE_TM,
     )
     snapshot_id = str(meta.get("snapshot_id", ""))
     if snapshot_id == "":
@@ -471,8 +477,8 @@ def build_examples_db_from_reference(
     return _build_examples_db(
         rows,
         output_path=output_path,
-        scope="reference",
-        source_snapshot_kind="reference_tm",
+        scope=TmScope.REFERENCE,
+        source_snapshot_kind=DbKind.REFERENCE_TM,
         source_snapshot_id=snapshot_id,
         lang=lang,
         config=config,
@@ -498,7 +504,7 @@ def open_examples_db(
             conn,
             expected_project_id=project_id,
             expected_config_hash=config_hash,
-            expected_kind="examples",
+            expected_kind=DbKind.EXAMPLES,
             expected_embed_policy_hash=embed_policy_hash,
         )
         _validate_examples_meta(meta)
@@ -556,12 +562,12 @@ def _validate_examples_meta(meta: Mapping[str, str]) -> None:
     ]
     if blank:
         raise ValueError(f"invalid examples DB meta: empty {', '.join(blank)}")
-    if meta.get("kind") and meta.get("kind") != "examples":
+    if meta.get("kind") and meta.get("kind") != DbKind.EXAMPLES:
         raise ValueError("invalid examples DB meta: kind must be examples")
-    if meta.get("schema_version") and meta.get("schema_version") != "1":
+    if meta.get("schema_version") and meta.get("schema_version") != EXAMPLES_SCHEMA_VERSION:
         raise ValueError("invalid examples DB meta: schema_version must be 1")
     examples_scope = meta.get("examples_scope", "")
-    if examples_scope not in {"workspace", "reference"}:
+    if examples_scope not in {TmScope.WORKSPACE, TmScope.REFERENCE}:
         raise ValueError(
             "invalid examples DB meta: examples_scope must be workspace or reference"
         )
@@ -574,11 +580,11 @@ def _validate_examples_meta(meta: Mapping[str, str]) -> None:
     if embedding_dim <= 0:
         raise ValueError("invalid examples DB meta: embedding_dim must be > 0")
     source_kind = meta.get("source_snapshot_kind", "")
-    if source_kind not in {"workspace_tm", "reference_tm"}:
+    if source_kind not in {DbKind.WORKSPACE_TM, DbKind.REFERENCE_TM}:
         raise ValueError(
             "invalid examples DB meta: source_snapshot_kind must be workspace_tm or reference_tm"
         )
-    if source_kind == "reference_tm" and meta.get("source_snapshot_id", "") == "":
+    if source_kind == DbKind.REFERENCE_TM and meta.get("source_snapshot_id", "") == "":
         raise ValueError(
             "invalid examples DB meta: source_snapshot_id required for reference_tm"
         )
@@ -662,9 +668,11 @@ def query_examples(
         allow_ai_generated=allow_ai_generated,
     )
     has_filters = lang is not None or bool(review_statuses) or allow_ai_generated is False
-    scan_limit = int(top_n)
     if has_filters:
-        scan_limit = min(max(scan_limit * 10, scan_limit), 10000)
+        # Over-fetch when filtering to ensure we get enough results after filtering.
+        scan_limit = min(top_n * 10, 10000)
+    else:
+        scan_limit = top_n
 
     params: list[object] = [blob, int(scan_limit)]
     if lang is not None:

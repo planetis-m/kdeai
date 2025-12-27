@@ -18,9 +18,15 @@ from kdeai import hash as kdehash
 from kdeai import locks
 from kdeai import po_model
 from kdeai import snapshot
+from kdeai.constants import DbKind, REFERENCE_TM_SCHEMA_VERSION, ReviewStatus
 
 
-DEFAULT_REVIEW_STATUS_ORDER = ["reviewed", "draft", "needs_review", "unreviewed"]
+DEFAULT_REVIEW_STATUS_ORDER = [
+    ReviewStatus.REVIEWED,
+    ReviewStatus.DRAFT,
+    ReviewStatus.NEEDS_REVIEW,
+    ReviewStatus.UNREVIEWED,
+]
 
 
 @dataclass(frozen=True)
@@ -69,12 +75,12 @@ def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
     else:
         non_empty = (entry.msgstr or "").strip() != ""
     if not non_empty:
-        return "unreviewed"
+        return ReviewStatus.UNREVIEWED
     if "fuzzy" in entry.flags:
-        return "needs_review"
+        return ReviewStatus.NEEDS_REVIEW
     if _tool_comment_lines(entry.tcomment, [review_prefix]):
-        return "reviewed"
-    return "draft"
+        return ReviewStatus.REVIEWED
+    return ReviewStatus.DRAFT
 
 
 def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) -> int:
@@ -310,8 +316,8 @@ def build_reference_snapshot(
         )
 
     meta_payload = {
-        "schema_version": "1",
-        "kind": "reference_tm",
+        "schema_version": REFERENCE_TM_SCHEMA_VERSION,
+        "kind": DbKind.REFERENCE_TM,
         "project_id": project_id,
         "config_hash": config_hash,
         "created_at": created_at,

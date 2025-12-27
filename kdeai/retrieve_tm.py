@@ -6,10 +6,11 @@ import sqlite3
 
 from kdeai import hash as kdehash
 from kdeai.config import Config
+from kdeai.constants import ReviewStatus, TmScope
 from kdeai.po_utils import parse_msgstr_plural
 from kdeai.tm_types import SessionTmView
 
-DEFAULT_LOOKUP_SCOPES = ["session", "workspace", "reference"]
+DEFAULT_LOOKUP_SCOPES = [TmScope.SESSION, TmScope.WORKSPACE, TmScope.REFERENCE]
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ def _candidate_from_session(
             review_status=entry.review_status,
             is_ai_generated=entry.is_ai_generated,
             translation_hash=entry.translation_hash,
-            scope="session",
+            scope=TmScope.SESSION,
             file_path="",
             file_sha256="",
         )
@@ -68,7 +69,7 @@ def _candidate_from_session(
 
     msgstr = str(entry.get("msgstr", ""))
     msgstr_plural = parse_msgstr_plural(entry.get("msgstr_plural", {}))
-    review_status = str(entry.get("review_status", "draft"))
+    review_status = str(entry.get("review_status", ReviewStatus.DRAFT))
     is_ai_generated = int(entry.get("is_ai_generated", 0))
     translation_hash = str(
         entry.get(
@@ -85,7 +86,7 @@ def _candidate_from_session(
         review_status=review_status,
         is_ai_generated=is_ai_generated,
         translation_hash=translation_hash,
-        scope="session",
+        scope=TmScope.SESSION,
     )
 
 
@@ -132,7 +133,7 @@ def _lookup_workspace(
         review_status=str(row[5]),
         is_ai_generated=int(row[6]),
         translation_hash=str(row[7]),
-        scope="workspace",
+        scope=TmScope.WORKSPACE,
     )
 
 
@@ -165,7 +166,7 @@ def _lookup_reference(
         review_status=str(row[6]),
         is_ai_generated=int(row[7]),
         translation_hash=str(row[8]),
-        scope="reference",
+        scope=TmScope.REFERENCE,
     )
 
 
@@ -183,11 +184,11 @@ def lookup_tm_exact(
     scopes = _lookup_scopes(config, lookup_scopes)
 
     for scope in scopes:
-        if scope == "session":
+        if scope == TmScope.SESSION:
             candidate = _lookup_session(session_tm, source_key, lang)
-        elif scope == "workspace":
+        elif scope == TmScope.WORKSPACE:
             candidate = _lookup_workspace(workspace_conn, source_key, lang)
-        elif scope == "reference":
+        elif scope == TmScope.REFERENCE:
             candidate = _lookup_reference(reference_conn, source_key, lang)
         else:
             continue

@@ -12,6 +12,7 @@ import spacy
 from kdeai import db as kdedb
 from kdeai.config import Config
 from kdeai import hash as kdehash
+from kdeai.constants import DbKind, GLOSSARY_SCHEMA_VERSION
 from kdeai.po_utils import parse_msgstr_plural
 
 NORMALIZATION_ID = "kdeai_glossary_norm_v1"
@@ -135,7 +136,7 @@ def build_glossary_db(
         meta,
         expected_project_id=project_id,
         expected_config_hash=config_hash,
-        expected_kind="reference_tm",
+        expected_kind=DbKind.REFERENCE_TM,
     )
 
     src_lang = config.languages.source
@@ -248,13 +249,13 @@ def build_glossary_db(
 
     spacy_model_name = str(config.prompt.glossary.spacy_model)
     meta_payload = {
-        "schema_version": "1",
-        "kind": "glossary",
+        "schema_version": GLOSSARY_SCHEMA_VERSION,
+        "kind": DbKind.GLOSSARY,
         "project_id": project_id,
         "config_hash": config_hash,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "snapshot_id": str(snapshot_id),
-        "source_snapshot_kind": "reference_tm",
+        "source_snapshot_kind": DbKind.REFERENCE_TM,
         "source_snapshot_id": str(snapshot_id),
         "glossary_src_lang": src_lang,
         "tokenizer_id": f"spacy@{spacy.__version__}:{spacy_model_name}",

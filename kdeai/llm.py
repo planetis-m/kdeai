@@ -5,6 +5,7 @@ from typing import Iterable, Mapping, MutableMapping, TypedDict
 import dspy
 
 from kdeai.config import Config
+from kdeai.constants import PlanAction
 from kdeai.llm_provider import configure_dspy
 from kdeai.prompt import PromptData
 
@@ -211,7 +212,7 @@ def batch_translate(
     for entry in entries:
         if not isinstance(entry, MutableMapping):
             continue
-        if str(entry.get("action", "")) != "needs_llm":
+        if str(entry.get("action", "")) != PlanAction.NEEDS_LLM:
             continue
         prompt_payload = build_prompt_payload(entry, target_lang=normalized_lang)
         prediction = translator(prompt_payload)
@@ -225,7 +226,7 @@ def batch_translate(
             translated_plural=translated_plural,
         )
         entry["prompt"] = prompt_payload
-        entry["action"] = "llm"
+        entry["action"] = PlanAction.LLM
         _apply_llm_tagging(entry, config=config, model_id=model_id)
         updated.append(entry)
 
@@ -252,7 +253,7 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
         for entry in entries:
             if not isinstance(entry, MutableMapping):
                 continue
-            if str(entry.get("action", "")) != "needs_llm":
+            if str(entry.get("action", "")) != PlanAction.NEEDS_LLM:
                 continue
             prompt_payload = build_prompt_payload(entry, target_lang=target_lang)
             prediction = translator(prompt_payload)
@@ -266,7 +267,7 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
                 translated_plural=translated_plural,
             )
             entry["prompt"] = prompt_payload
-            entry["action"] = "llm"
+            entry["action"] = PlanAction.LLM
             _apply_llm_tagging(entry, config=config, model_id=model_id)
 
     return plan

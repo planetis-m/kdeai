@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from kdeai import db as kdedb
 from kdeai.config import Config
+from kdeai.constants import DbKind
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ def gc_workspace_tm(
             meta,
             expected_project_id=project_id,
             expected_config_hash=config_hash,
-            expected_kind="workspace_tm",
+            expected_kind=DbKind.WORKSPACE_TM,
         )
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=int(ttl_days))

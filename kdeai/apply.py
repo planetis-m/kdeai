@@ -20,6 +20,7 @@ from kdeai.config import Config
 from kdeai import snapshot
 from kdeai import validate
 from kdeai import workspace_tm
+from kdeai.constants import PlanAction, ReviewStatus
 from kdeai.tm_types import SessionTm
 
 ALLOWED_OVERWRITE_POLICIES = {
@@ -50,6 +51,34 @@ class ApplyContext:
     ai_prefix: str
     ai_flag: str
     placeholder_patterns: list[str | re.Pattern[str]]
+
+    @classmethod
+    def from_config(
+        cls,
+        config: Config,
+        lang: str,
+        mode: str,
+        overwrite_policy: str,
+        placeholder_patterns: list[re.Pattern[str]],
+    ) -> "ApplyContext":
+        marker_flags, comment_prefixes, review_prefix, ai_prefix, ai_flag = (
+            po_utils.marker_settings_from_config(config)
+        )
+        # Ensure ai_flag participates in state hash computation.
+        combined_marker_flags = list(marker_flags)
+        if ai_flag not in combined_marker_flags:
+            combined_marker_flags.append(ai_flag)
+        return cls(
+            lang=lang,
+            mode=mode,
+            overwrite_policy=overwrite_policy,
+            marker_flags=combined_marker_flags,
+            comment_prefixes=list(comment_prefixes),
+            review_prefix=review_prefix,
+            ai_prefix=ai_prefix,
+            ai_flag=ai_flag,
+            placeholder_patterns=placeholder_patterns,
+        )
 
 
 @dataclass(frozen=True)
@@ -226,12 +255,12 @@ def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> b
 def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
     non_empty = po_utils.has_non_empty_translation(entry)
     if not non_empty:
-        return "unreviewed"
+        return ReviewStatus.UNREVIEWED
     if "fuzzy" in entry.flags:
-        return "needs_review"
+        return ReviewStatus.NEEDS_REVIEW
     if po_utils.is_reviewed(entry, review_prefix):
-        return "reviewed"
-    return "draft"
+        return ReviewStatus.REVIEWED
+    return ReviewStatus.DRAFT
 
 
 def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) -> int:
@@ -285,7 +314,7 @@ def _validate_plan_entry(entry_item: object, *, tool_prefixes: list[str]) -> lis
     if not isinstance(base_state_hash, str):
         errors.append("base_state_hash must be a string")
     action = str(entry_item.get("action", ""))
-    if action in {"copy_tm", "llm"}:
+    if action in {PlanAction.COPY_TM, PlanAction.LLM}:
         translation = entry_item.get("translation")
         if not isinstance(translation, Mapping):
             errors.append("translation must be an object for copy_tm/llm")
@@ -353,8 +382,6 @@ def apply_plan_to_file(
 ) -> ApplyFileResult:
     tool_prefixes = [str(prefix) for prefix in ctx.comment_prefixes]
     marker_flags = list(ctx.marker_flags)
-    if ctx.ai_flag not in marker_flags:
-        marker_flags.append(ctx.ai_flag)
     comment_prefixes = list(ctx.comment_prefixes)
 
     file_warnings: list[str] = []
@@ -377,9 +404,9 @@ def apply_plan_to_file(
                 file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
             return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
         action = str(entry_item.get("action", ""))
-        if action == "needs_llm":
+        if action == PlanAction.NEEDS_LLM:
             continue
-        if action not in {"copy_tm", "llm"}:
+        if action not in {PlanAction.COPY_TM, PlanAction.LLM}:
             if action:
                 file_errors.append(f"{file_path}: unsupported action: {action}")
             else:
@@ -420,6 +447,31 @@ def apply_plan_to_file(
 
     applied_entries: list[polib.POEntry] = []
     applied_in_file = 0
+    plural_forms = po_file.metadata.get("Plural-Forms")
+    for entry_item, entry, action in to_apply:
+        current_non_empty = _has_non_empty_translation(entry)
+        reviewed = _is_reviewed(entry, ctx.review_prefix)
+        if not _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
+            continue
+
+        translation = entry_item.get("translation")
+        msgstr = translation.get("msgstr", "")
+        msgstr_plural = translation.get("msgstr_plural", {})
+        validation_errors = validate.validate_entry(
+            msgid=entry.msgid,
+            msgid_plural=entry.msgid_plural or "",
+            msgstr=msgstr or "",
+            msgstr_plural=kdestate.canonical_plural_map(msgstr_plural),
+            plural_forms=plural_forms,
+            placeholder_patterns=ctx.placeholder_patterns,
+        )
+        if validation_errors:
+            file_errors.extend(validation_errors)
+            break
+
+    if file_errors:
+        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
+
     for entry_item, entry, action in to_apply:
         current_non_empty = _has_non_empty_translation(entry)
         reviewed = _is_reviewed(entry, ctx.review_prefix)
@@ -446,24 +498,8 @@ def apply_plan_to_file(
             normalized_ensure = [str(line) for line in ensure_lines]
             _apply_comments(entry, normalized_remove, normalized_ensure, append)
 
-        plural_forms = po_file.metadata.get("Plural-Forms")
-        validation_errors = validate.validate_entry(
-            msgid=entry.msgid,
-            msgid_plural=entry.msgid_plural or "",
-            msgstr=entry.msgstr or "",
-            msgstr_plural=kdestate.canonical_plural_map(entry.msgstr_plural),
-            plural_forms=plural_forms,
-            placeholder_patterns=ctx.placeholder_patterns,
-        )
-        if validation_errors:
-            file_errors.extend(validation_errors)
-            break
-
         applied_in_file += 1
         applied_entries.append(entry)
-
-    if file_errors:
-        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
 
     if applied_in_file == 0:
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
@@ -540,15 +576,11 @@ def apply_plan(
     )
     placeholder_patterns = list(config.apply.validation_patterns)
     compiled_placeholder_patterns = [re.compile(pattern) for pattern in placeholder_patterns]
-    ctx = ApplyContext(
+    ctx = ApplyContext.from_config(
+        config,
         lang=lang,
         mode=selected_mode,
         overwrite_policy=selected_overwrite,
-        marker_flags=list(marker_flags),
-        comment_prefixes=list(comment_prefixes),
-        review_prefix=review_prefix,
-        ai_prefix=ai_prefix,
-        ai_flag=ai_flag,
         placeholder_patterns=compiled_placeholder_patterns,
     )
 

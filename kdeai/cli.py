@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Literal, Sequence
+from typing import Optional, Literal, Sequence, NoReturn
 import os
 from datetime import datetime, timezone
 
@@ -23,7 +23,15 @@ from kdeai import po_utils
 from kdeai import reference as kderef
 from kdeai import snapshot
 from kdeai import workspace_tm
+from kdeai.constants import DbKind, TmScope, WORKSPACE_TM_SCHEMA_VERSION
 from kdeai.project import Project
+
+
+def _exit_with_error(message: str, code: int = 1) -> NoReturn:
+    """Print error message to stderr and exit with given code."""
+    typer.secho(f"Error: {message}", fg="red", err=True)
+    raise typer.Exit(code)
+
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 reference_app = typer.Typer(no_args_is_help=True)
@@ -61,8 +69,7 @@ def _acquire_run_lock(project_root: Path, ctx: typer.Context) -> None:
     try:
         lock_cm.__enter__()
     except portalocker.exceptions.LockException:
-        typer.secho("Global run lock is held; another KDEAI process is running.", err=True)
-        raise typer.Exit(1)
+        _exit_with_error("Global run lock is held; another KDEAI process is running.")
     ctx.obj = {"project_root": project_root, "run_lock_cm": lock_cm}
     ctx.call_on_close(lambda: lock_cm.__exit__(None, None, None))
 
@@ -248,8 +255,8 @@ def _ensure_workspace_db(
         if created:
             conn.executescript(kdedb.WORKSPACE_TM_SCHEMA)
             meta = {
-                "schema_version": "1",
-                "kind": "workspace_tm",
+                "schema_version": WORKSPACE_TM_SCHEMA_VERSION,
+                "kind": DbKind.WORKSPACE_TM,
                 "project_id": project_id,
                 "config_hash": config_hash,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -262,7 +269,7 @@ def _ensure_workspace_db(
                 meta,
                 expected_project_id=project_id,
                 expected_config_hash=config_hash,
-                expected_kind="workspace_tm",
+                expected_kind=DbKind.WORKSPACE_TM,
             )
     except Exception:
         conn.close()
@@ -302,8 +309,7 @@ def plan(
         project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
-        typer.secho(f"Plan failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"Plan failed: {exc}")
     cache_mode = cache or "on"
     cache_write_flag = cache_write or "on"
     if cache_write_flag == "off":
@@ -319,8 +325,7 @@ def plan(
             )
         )
     except ValueError as exc:
-        typer.secho(str(exc), err=True)
-        raise typer.Exit(1)
+        _exit_with_error(str(exc))
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
@@ -362,7 +367,7 @@ def plan(
         builder.close()
 
     if plan_payload is None:
-        raise typer.Exit(1)
+        _exit_with_error("Plan failed.")
 
     if out is None:
         typer.echo(kdeplan.render_plan_json(plan_payload))
@@ -387,8 +392,7 @@ def apply(
         project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
-        typer.secho(f"Apply failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"Apply failed: {exc}")
 
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
@@ -421,9 +425,8 @@ def apply(
         workspace_conn.close()
 
     if result.errors:
-        for error in result.errors:
-            typer.secho(error, err=True)
-        raise typer.Exit(1)
+        error_message = "\nError: ".join(result.errors)
+        _exit_with_error(error_message)
 
     if result.warnings:
         for warning in result.warnings:
@@ -453,8 +456,7 @@ def translate(
         project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
-        typer.secho(f"Translate failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"Translate failed: {exc}")
     cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
     try:
@@ -468,8 +470,7 @@ def translate(
             )
         )
     except ValueError as exc:
-        typer.secho(str(exc), err=True)
-        raise typer.Exit(1)
+        _exit_with_error(str(exc))
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
@@ -547,14 +548,13 @@ def translate(
             )
 
             if result.errors:
-                for error in result.errors:
-                    typer.secho(error, err=True)
                 if out is not None:
                     combined_plan = dict(plan_header)
                     files_payload.sort(key=lambda item: str(item.get("file_path", "")))
                     combined_plan["files"] = files_payload
                     kdeplan.write_plan(out, combined_plan)
-                raise typer.Exit(1)
+                error_message = "\nError: ".join(result.errors)
+                _exit_with_error(error_message)
 
             if result.warnings:
                 for warning in result.warnings:
@@ -591,8 +591,7 @@ def index(
         project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
-        typer.secho(f"Index failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"Index failed: {exc}")
 
     project_id = str(project.project_data["project_id"])
     path_casefold = bool(project.project_data.get("path_casefold"))
@@ -632,8 +631,7 @@ def index(
             except Exception as exc:
                 message = f"{relpath}: {exc}"
                 if strict:
-                    typer.secho(message, err=True)
-                    raise typer.Exit(1)
+                    _exit_with_error(message)
                 typer.secho(f"Warning: {message}", err=True)
     finally:
         conn.close()
@@ -661,8 +659,7 @@ def reference_build(
             label=label,
         )
     except Exception as exc:
-        typer.secho(f"Reference build failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"Reference build failed: {exc}")
     pointer_path = (
         project_root
         / ".kdeai"
@@ -691,25 +688,21 @@ def examples_build(
         project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
-        typer.secho(f"Examples build failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"Examples build failed: {exc}")
 
     if lang == "all":
         targets = config.languages.targets
         if not targets:
-            typer.secho("No target languages configured.", err=True)
-            raise typer.Exit(1)
+            _exit_with_error("No target languages configured.")
         languages = [str(item) for item in targets]
     else:
         languages = [lang]
 
     sqlite_vector_path = _sqlite_vector_path(project_root)
     if sqlite_vector_path is None:
-        typer.secho(
-            "Examples build failed: sqlite-vector extension not found at ./vector.so",
-            err=True,
+        _exit_with_error(
+            "Examples build failed: sqlite-vector extension not found at ./vector.so"
         )
-        raise typer.Exit(1)
 
     for target_lang in languages:
         pointer_path = (
@@ -742,15 +735,14 @@ def examples_build(
         try:
             embedder = _require_embedder(_examples_embed_policy(config))
         except Exception as exc:
-            typer.secho(str(exc), err=True)
-            raise typer.Exit(1) from exc
+            _exit_with_error(str(exc))
         output_dir = (
             project_root / ".kdeai" / "cache" / "examples" / from_scope
         )
         ex_id = _next_pointer_id(pointer_path, "ex_id")
         output_path = output_dir / f"examples.{from_scope}.{target_lang}.{ex_id}.sqlite"
 
-        if from_scope == "workspace":
+        if from_scope == TmScope.WORKSPACE:
             conn = _ensure_workspace_db(
                 project_root,
                 project_id=str(project.project_data["project_id"]),
@@ -771,7 +763,7 @@ def examples_build(
                 )
             finally:
                 conn.close()
-            source_snapshot = {"kind": "workspace_tm", "snapshot_id": 0}
+            source_snapshot = {"kind": DbKind.WORKSPACE_TM, "snapshot_id": 0}
         else:
             pointer = _read_json(
                 project_root
@@ -801,7 +793,7 @@ def examples_build(
             finally:
                 reference_conn.close()
             source_snapshot = {
-                "kind": "reference_tm",
+                "kind": DbKind.REFERENCE_TM,
                 "snapshot_id": int(pointer.get("snapshot_id", 0)),
             }
 
@@ -842,8 +834,7 @@ def glossary_build(
         project = Project.load_or_init(project_root)
         config = project.config
     except Exception as exc:
-        typer.secho(f"Glossary build failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"Glossary build failed: {exc}")
     pointer_path = (
         project_root / ".kdeai" / "cache" / "glossary" / "glossary.current.json"
     )
@@ -857,7 +848,7 @@ def glossary_build(
                 conn,
                 expected_project_id=str(project.project_data["project_id"]),
                 expected_config_hash=config.config_hash,
-                expected_kind="glossary",
+                expected_kind=DbKind.GLOSSARY,
                 expected_normalization_id=_glossary_normalization_id(config),
             )
             conn.close()
@@ -902,7 +893,7 @@ def glossary_build(
         "db_file": kdeglossary_path.name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_snapshot": {
-            "kind": "reference_tm",
+            "kind": DbKind.REFERENCE_TM,
             "snapshot_id": int(ref_pointer.get("snapshot_id", 0)),
         },
     }
@@ -922,9 +913,8 @@ def doctor(
     for message in report.warnings:
         typer.secho(f"Warning: {message}", err=True)
     if report.errors:
-        for message in report.errors:
-            typer.secho(f"Error: {message}", err=True)
-        raise typer.Exit(1)
+        error_message = "\nError: ".join(report.errors)
+        _exit_with_error(error_message)
     typer.echo("Doctor checks passed.")
 
 
@@ -945,8 +935,7 @@ def gc(
             ttl_days=ttl_days,
         )
     except Exception as exc:
-        typer.secho(f"GC failed: {exc}", err=True)
-        raise typer.Exit(1)
+        _exit_with_error(f"GC failed: {exc}")
     typer.echo(
         "GC complete: "
         f"{report.files_deleted} files, "

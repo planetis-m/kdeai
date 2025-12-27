@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Mapping
 import sqlite3
 
+from kdeai.constants import DbKind, WORKSPACE_TM_SCHEMA_VERSION
 WORKSPACE_TM_SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
@@ -56,7 +57,7 @@ CREATE INDEX idx_trans_lookup ON translations(source_key, lang);
 CREATE INDEX idx_best_lang ON best_translations(lang);
 """
 
-SUPPORTED_SCHEMA_VERSION = "1"
+SUPPORTED_SCHEMA_VERSION = WORKSPACE_TM_SCHEMA_VERSION
 
 REFERENCE_TM_SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -260,12 +261,12 @@ def validate_meta(
     if meta["config_hash"] != expected_config_hash:
         raise ValueError("meta config_hash mismatch")
 
-    if kind == "workspace_tm":
+    if kind == DbKind.WORKSPACE_TM:
         return
-    if kind == "reference_tm":
+    if kind == DbKind.REFERENCE_TM:
         _require_int(meta, "snapshot_id")
         return
-    if kind == "examples":
+    if kind == DbKind.EXAMPLES:
         _require_keys(
             meta,
             [
@@ -286,14 +287,14 @@ def validate_meta(
         _require_int(meta, "embedding_dim")
         _parse_bool_text(meta["require_finite"], "require_finite")
         source_kind = meta["source_snapshot_kind"]
-        if source_kind not in {"workspace_tm", "reference_tm"}:
+        if source_kind not in {DbKind.WORKSPACE_TM, DbKind.REFERENCE_TM}:
             raise ValueError("meta source_snapshot_kind must be workspace_tm or reference_tm")
-        if source_kind == "reference_tm":
+        if source_kind == DbKind.REFERENCE_TM:
             _require_int(meta, "source_snapshot_id")
         elif "source_snapshot_id" in meta and meta["source_snapshot_id"] != "":
             _require_int(meta, "source_snapshot_id")
         return
-    if kind == "glossary":
+    if kind == DbKind.GLOSSARY:
         _require_keys(
             meta,
             [
@@ -309,7 +310,7 @@ def validate_meta(
             ],
         )
         _require_int(meta, "snapshot_id")
-        if meta["source_snapshot_kind"] != "reference_tm":
+        if meta["source_snapshot_kind"] != DbKind.REFERENCE_TM:
             raise ValueError("meta source_snapshot_kind must be reference_tm")
         _require_int(meta, "source_snapshot_id")
         if expected_normalization_id is not None and meta["normalization_id"] != expected_normalization_id:

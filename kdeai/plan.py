@@ -23,6 +23,7 @@ from kdeai import prompt as kdeprompt
 from kdeai import retrieve_examples
 from kdeai import retrieve_tm
 from kdeai import snapshot
+from kdeai.constants import DbKind, PlanAction, TmScope
 from kdeai.tm_types import SessionTmView
 
 PLAN_FORMAT_VERSION = 1
@@ -45,6 +46,23 @@ class PlannerAssets:
     glossary_matcher: object | None
     examples_top_n: int
     glossary_max_terms: int
+
+    def close(self) -> None:
+        """Close all database connections."""
+        if self.examples_db is not None:
+            self.examples_db.conn.close()
+        if self.workspace_conn is not None:
+            self.workspace_conn.close()
+        if self.reference_conn is not None:
+            self.reference_conn.close()
+        if self.glossary_conn is not None:
+            self.glossary_conn.close()
+
+    def __enter__(self) -> "PlannerAssets":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
 
 DraftPlan = dict[str, object]
@@ -103,14 +121,19 @@ class PlanBuilder:
         return _tm_tags_and_comments(self.config, tm_candidate)
 
     def close(self) -> None:
-        if self.assets.examples_db is not None:
-            self.assets.examples_db.conn.close()
-        if self.assets.workspace_conn is not None:
-            self.assets.workspace_conn.close()
-        if self.assets.reference_conn is not None:
-            self.assets.reference_conn.close()
-        if self.assets.glossary_conn is not None:
-            self.assets.glossary_conn.close()
+        self.assets.close()
+
+    def __enter__(self) -> "PlanBuilder":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def _marker_flags_for_state_hash(self) -> list[str]:
+        marker_flags = list(self.marker_flags)
+        if self.ai_flag not in marker_flags:
+            marker_flags.append(self.ai_flag)
+        return marker_flags
 
     def build_draft(
         self,
@@ -122,9 +145,7 @@ class PlanBuilder:
         skipped_overwrite = 0
         tm_entries = 0
         llm_entries = 0
-        marker_flags = list(self.marker_flags)
-        if self.ai_flag not in marker_flags:
-            marker_flags.append(self.ai_flag)
+        marker_flags = self._marker_flags_for_state_hash()
         comment_prefixes = list(self.comment_prefixes)
 
         for entry in source_entries:
@@ -164,14 +185,13 @@ class PlanBuilder:
                         "msgid": msgid,
                         "msgid_plural": msgid_plural,
                         "base_state_hash": base_state_hash,
-                        "action": "copy_tm",
+                        "action": PlanAction.COPY_TM,
                         "translation": {
                             "msgstr": tm_candidate.msgstr,
                             "msgstr_plural": tm_candidate.msgstr_plural,
                         },
                         "flags": flags,
                         "comments": comments,
-                        "tm_scope": tm_candidate.scope,
                     }
                 )
                 tm_entries += 1
@@ -199,7 +219,7 @@ class PlanBuilder:
                     "msgid": msgid,
                     "msgid_plural": msgid_plural,
                     "base_state_hash": base_state_hash,
-                    "action": "needs_llm",
+                    "action": PlanAction.NEEDS_LLM,
                     "translation": {"msgstr": "", "msgstr_plural": {}},
                     "examples": kdeprompt.examples_context(examples),
                     "glossary_terms": kdeprompt.glossary_context(glossary_matches),
@@ -252,7 +272,7 @@ def generate_plan_for_file(
         needs_llm = [
             entry
             for entry in entries
-            if isinstance(entry, MutableMapping) and entry.get("action") == "needs_llm"
+            if isinstance(entry, MutableMapping) and entry.get("action") == PlanAction.NEEDS_LLM
         ]
     else:
         needs_llm = []
@@ -384,7 +404,7 @@ def _open_workspace_tm(
             conn,
             expected_project_id=project_id,
             expected_config_hash=config_hash,
-            expected_kind="workspace_tm",
+            expected_kind=DbKind.WORKSPACE_TM,
         )
     except Exception as exc:
         logger.debug("Workspace TM validation failed: %s", exc)
@@ -419,7 +439,7 @@ def _open_reference_tm(
             conn,
             expected_project_id=project_id,
             expected_config_hash=config_hash,
-            expected_kind="reference_tm",
+            expected_kind=DbKind.REFERENCE_TM,
         )
     except Exception as exc:
         logger.debug("Reference TM validation failed: %s", exc)
@@ -455,7 +475,7 @@ def _open_glossary_db(
             conn,
             expected_project_id=project_id,
             expected_config_hash=config_hash,
-            expected_kind="glossary",
+            expected_kind=DbKind.GLOSSARY,
             expected_normalization_id=normalization_id,
         )
     except Exception as exc:
@@ -532,7 +552,7 @@ def _build_assets(
     glossary_matcher: object | None = None
     glossary_conn = None
     if glossary_mode != "off" and cache != "off":
-        if "reference" in glossary_scopes:
+        if TmScope.REFERENCE in glossary_scopes:
             glossary_conn = _open_glossary_db(
                 project_root,
                 project_id=project_id,

@@ -7,8 +7,14 @@ import sqlite3
 from kdeai import hash as kdehash
 from kdeai.config import Config
 from kdeai import po_model
+from kdeai.constants import ReviewStatus
 
-DEFAULT_REVIEW_STATUS_ORDER = ["reviewed", "draft", "needs_review", "unreviewed"]
+DEFAULT_REVIEW_STATUS_ORDER = [
+    ReviewStatus.REVIEWED,
+    ReviewStatus.DRAFT,
+    ReviewStatus.NEEDS_REVIEW,
+    ReviewStatus.UNREVIEWED,
+]
 DEFAULT_PREFER_HUMAN = True
 DEFAULT_REVIEW_PREFIX = "KDEAI-REVIEW:"
 DEFAULT_AI_PREFIX = "KDEAI-AI:"
@@ -58,12 +64,12 @@ def _derive_review_status(
     else:
         non_empty = msgstr.strip() != ""
     if not non_empty:
-        return "unreviewed"
+        return ReviewStatus.UNREVIEWED
     if "fuzzy" in flags:
-        return "needs_review"
+        return ReviewStatus.NEEDS_REVIEW
     if _tool_comment_lines(tcomment, [review_prefix]):
-        return "reviewed"
-    return "draft"
+        return ReviewStatus.REVIEWED
+    return ReviewStatus.DRAFT
 
 
 def _derive_is_ai_generated(flags: Sequence[str], tcomment: str, ai_flag: str, ai_prefix: str) -> int:

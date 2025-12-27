@@ -8,6 +8,11 @@ import json
 from kdeai import hash as kdehash
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
+OverwritePolicy = Literal["conservative", "allow-nonempty", "allow-reviewed", "all"]
+TmScope = Literal["session", "workspace", "reference"]
+AssetMode = Literal["off", "auto", "required"]
+ApplyMode = Literal["strict", "rebase"]
+ReviewStatus = Literal["reviewed", "draft", "needs_review", "unreviewed"]
 
 def compute_canonical_hash(data: dict) -> str:
     canonical = kdehash.canonical_json_bytes(data)
@@ -56,16 +61,16 @@ class ExamplesEligibility(_BaseModel):
 
 
 class ExamplesConfig(_BaseModel):
-    mode_default: StrictStr
-    lookup_scopes: list[StrictStr]
+    mode_default: AssetMode
+    lookup_scopes: list[TmScope]
     top_n: StrictInt = Field(gt=0)
     embedding_policy: EmbeddingPolicy
     eligibility: ExamplesEligibility
 
 
 class GlossaryConfig(_BaseModel):
-    mode_default: StrictStr
-    lookup_scopes: list[StrictStr]
+    mode_default: AssetMode
+    lookup_scopes: list[TmScope]
     spacy_model: StrictStr
     normalization_id: StrictStr
     max_terms: StrictInt = Field(gt=0)
@@ -89,8 +94,8 @@ class ApplyTagging(_BaseModel):
 
 
 class ApplyConfig(_BaseModel):
-    mode_default: StrictStr
-    overwrite_default: StrictStr
+    mode_default: ApplyMode
+    overwrite_default: OverwritePolicy
     tagging: ApplyTagging
     validation_patterns: list[StrictStr] = Field(default_factory=list)
 
@@ -113,12 +118,12 @@ class LanguagesConfig(_BaseModel):
 
 
 class TMSelection(_BaseModel):
-    review_status_order: list[StrictStr]
+    review_status_order: list[ReviewStatus]
     prefer_human: StrictBool
 
 
 class TMConfig(_BaseModel):
-    lookup_scopes: list[StrictStr]
+    lookup_scopes: list[TmScope]
     selection: TMSelection
 
 
