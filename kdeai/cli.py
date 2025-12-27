@@ -303,7 +303,10 @@ def plan(
         config = project.config
     except Exception as exc:
         _exit_with_error(f"Plan failed: {exc}")
+    cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
+    if cache_write_flag == "off":
+        typer.secho("Note: translate does not write cache; --cache-write has no effect.", err=True)
     cache_write_flag = cache_write or "on"
     if cache_write_flag == "off":
         typer.secho("Note: plan never writes cache; --cache-write has no effect.", err=True)
@@ -342,7 +345,6 @@ def plan(
                 path=path,
                 path_casefold=path_casefold,
                 builder=builder,
-                config=config,
             )
             files_payload.append(file_draft)
         files_payload.sort(key=lambda item: str(item.get("file_path", "")))
@@ -448,7 +450,6 @@ def translate(
         config = project.config
     except Exception as exc:
         _exit_with_error(f"Translate failed: {exc}")
-    cache_write_flag = cache_write or "on"
     cache_mode = cache or "on"
     try:
         resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
@@ -466,9 +467,6 @@ def translate(
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
 
     apply_defaults = _apply_defaults_from_config(config, overwrite_default=overwrite)
-    post_index_flag = apply_defaults.get("post_index") == "on"
-    if cache_mode == "off" or cache_write_flag == "off":
-        post_index_flag = False
 
     builder = kdeplan.PlanBuilder(
         project_root=project_root,
@@ -478,30 +476,16 @@ def translate(
         cache=cache_mode,
         examples_mode=resolved_examples_mode,
         glossary_mode=resolved_glossary_mode,
-        overwrite=overwrite,
         session_tm={},
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
     )
 
     files_payload: list[dict] = []
-    workspace_conn = None
     session_tm = builder.session_tm
     total_entries_applied = 0
     files_written: list[str] = []
     files_skipped: list[str] = []
-
-    if post_index_flag:
-        try:
-            workspace_conn = _ensure_workspace_db(
-                project_root,
-                project_id=str(project.project_data["project_id"]),
-                config_hash=config.config_hash,
-                config=config,
-            )
-        except Exception as exc:
-            typer.secho(f"Warning: post-index disabled ({exc}).", err=True)
-            post_index_flag = False
 
     plan_header = _build_plan_header(
         project=project,
@@ -518,7 +502,6 @@ def translate(
                 path=path,
                 path_casefold=path_casefold,
                 builder=builder,
-                config=config,
             )
             files_payload.append(file_plan)
             per_file_plan = dict(plan_header)
@@ -531,8 +514,6 @@ def translate(
                 config=config,
                 apply_mode=apply_mode,
                 overwrite=overwrite,
-                post_index=post_index_flag,
-                workspace_conn=workspace_conn,
                 session_tm=session_tm,
             )
 
@@ -559,8 +540,6 @@ def translate(
             combined_plan["files"] = files_payload
             kdeplan.write_plan(out, combined_plan)
     finally:
-        if workspace_conn is not None:
-            workspace_conn.close()
         builder.close()
 
     typer.echo(

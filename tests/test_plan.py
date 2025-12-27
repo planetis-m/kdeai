@@ -400,7 +400,6 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
                     path=po_path,
                     path_casefold=False,
                     builder=builder,
-                    config=config,
                 )
             finally:
                 kdellm.KDEAITranslator.forward = original_forward
@@ -445,7 +444,7 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "Datei")
 
-    def test_generate_plan_for_file_run_llm_false_raises(self):
+    def test_generate_plan_for_file_empty_llm_translation_raises(self):
         config = build_config()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -476,15 +475,25 @@ class TestGeneratePlanWithRunLlm(unittest.TestCase):
                 sqlite_vector_path=None,
             )
             try:
-                with self.assertRaisesRegex(ValueError, "run_llm must be True"):
-                    kdeplan._generate_plan_for_file(
-                        project_root=root,
-                        project_id="proj",
-                        path=po_path,
-                        path_casefold=False,
-                        builder=builder,
-                        config=config,
-                        run_llm=False,
-                    )
+                from kdeai import llm as kdellm
+                original_forward = kdellm.KDEAITranslator.forward
+                original_lm = dspy.settings.lm
+                try:
+                    def _fake_forward(self, _prompt):
+                        return types.SimpleNamespace(translated_text="", translated_plural="")
+
+                    dspy.settings.lm = object()
+                    kdellm.KDEAITranslator.forward = _fake_forward
+                    with self.assertRaisesRegex(ValueError, "translation output empty"):
+                        kdeplan.generate_plan_for_file(
+                            project_root=root,
+                            project_id="proj",
+                            path=po_path,
+                            path_casefold=False,
+                            builder=builder,
+                        )
+                finally:
+                    kdellm.KDEAITranslator.forward = original_forward
+                    dspy.settings.lm = original_lm
             finally:
                 builder.close()

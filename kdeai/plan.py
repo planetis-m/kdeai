@@ -78,7 +78,6 @@ class PlanBuilder:
         cache: str = "on",
         examples_mode: AssetMode | None = None,
         glossary_mode: AssetMode | None = None,
-        overwrite: str | None = None,
         session_tm: SessionTmView | None = None,
         embedder: EmbeddingFunc | None = None,
         sqlite_vector_path: str | None = None,
@@ -228,28 +227,6 @@ def generate_plan_for_file(
     path: Path,
     path_casefold: bool,
     builder: PlanBuilder,
-    config: Config,
-) -> DraftPlan:
-    return _generate_plan_for_file(
-        project_root=project_root,
-        project_id=project_id,
-        path=path,
-        path_casefold=path_casefold,
-        builder=builder,
-        config=config,
-        run_llm=True,
-    )
-
-
-def _generate_plan_for_file(
-    *,
-    project_root: Path,
-    project_id: str,
-    path: Path,
-    path_casefold: bool,
-    builder: PlanBuilder,
-    config: Config,
-    run_llm: bool,
 ) -> DraftPlan:
     relpath = _normalize_relpath(project_root, path)
     relpath_key = _relpath_key(relpath, path_casefold)
@@ -279,16 +256,11 @@ def _generate_plan_for_file(
     else:
         needs_llm = []
 
-    if not run_llm and needs_llm:
-        raise ValueError(
-            f"LLM translations required to produce an applyable plan; run_llm must be True ({relpath})."
-        )
-
-    if run_llm and needs_llm:
+    if needs_llm:
         from kdeai import llm as kdellm
 
         needs_llm = _sorted_entries(needs_llm)
-        kdellm.batch_translate(needs_llm, config, target_lang=builder.lang)
+        kdellm.batch_translate(needs_llm, builder.config, target_lang=builder.lang)
         if any(
             not _has_non_empty_translation(entry.get("translation"), entry.get("msgid_plural", ""))
             for entry in needs_llm
