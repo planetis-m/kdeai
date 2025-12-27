@@ -532,7 +532,12 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 overwrite="conservative",
             )
             self.assertEqual(result.files_written, [])
-            self.assertIn("plan comments remove_prefixes must use tool prefixes", result.errors)
+            self.assertTrue(
+                any(
+                    "plan comments remove_prefixes must use tool prefixes" in error
+                    for error in result.errors
+                )
+            )
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
@@ -576,7 +581,12 @@ class TestApplyAdditionalCases(unittest.TestCase):
                 overwrite="conservative",
             )
             self.assertEqual(result.files_written, [])
-            self.assertIn("plan comments ensure_lines must use tool prefixes", result.errors)
+            self.assertTrue(
+                any(
+                    "plan comments ensure_lines must use tool prefixes" in error
+                    for error in result.errors
+                )
+            )
             updated = polib.pofile(str(po_path))
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
@@ -1590,7 +1600,7 @@ class TestApplyAdditionalCases(unittest.TestCase):
             )
 
             self.assertIn("locale/de.po", result.files_skipped)
-            self.assertTrue(any("unsupported action" in warning for warning in result.warnings))
+            self.assertTrue(any("unsupported action" in error for error in result.errors))
 
     def test_apply_fails_on_project_id_mismatch(self):
         with tempfile.TemporaryDirectory() as tmpdir:

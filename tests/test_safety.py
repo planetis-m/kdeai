@@ -99,8 +99,9 @@ class TestSnapshot(unittest.TestCase):
             lock_id = locks.lock_id("project", "file.po")
             lock_path = locks.per_file_lock_path(root, lock_id)
 
-            result = snapshot.locked_read_file(target, lock_path)
+            result = snapshot.locked_read_file(target, lock_path, relpath="file.po")
             stat = target.stat()
+            self.assertEqual(result.file_path, "file.po")
             self.assertEqual(result.bytes, b"abc")
             self.assertEqual(result.sha256, hashlib.sha256(b"abc").hexdigest())
             self.assertEqual(result.size, stat.st_size)

@@ -549,7 +549,9 @@ class TestExamplesDb(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "examples.sqlite"
             _write_examples_meta_db(db_path)
-            with mock.patch("kdeai.examples.kdedb.enable_sqlite_vector") as enable_vector:
+            with (
+                mock.patch("kdeai.examples.kdedb.enable_sqlite_vector") as enable_vector,
+            ):
                 db = examples.open_examples_db(
                     db_path,
                     project_id="proj",

@@ -223,7 +223,7 @@ def build_reference_snapshot(
             project_root,
             locks.lock_id(project_id, relpath_key),
         )
-        locked = snapshot.locked_read_file(path, lock_path)
+        locked = snapshot.locked_read_file(path, lock_path, relpath=relpath)
         po_file = _load_po_from_bytes(locked.bytes)
         lang = _lang_from_po(po_file, config)
         if not lang:

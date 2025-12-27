@@ -236,7 +236,7 @@ def generate_plan_for_file(
         project_root,
         locks.lock_id(project_id, relpath_key),
     )
-    locked = snapshot.locked_read_file(path, lock_path)
+    locked = snapshot.locked_read_file(path, lock_path, relpath=relpath)
     po_file = po_utils.load_po_from_bytes(locked.bytes)
     if po_file is None:
         raise ValueError(f"Failed to parse PO file: {relpath}")

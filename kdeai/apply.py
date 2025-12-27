@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 import hashlib
 import os
+import re
 import sqlite3
 import tempfile
 
@@ -48,7 +49,7 @@ class ApplyContext:
     review_prefix: str
     ai_prefix: str
     ai_flag: str
-    placeholder_patterns: list[str]
+    placeholder_patterns: list[str | re.Pattern[str]]
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,11 @@ def _validate_plan_header(
 
 def _load_po_from_bytes(data: bytes) -> polib.POFile:
     return po_utils.load_po_from_bytes(data)
+
+
+def _fsync_file(path: Path) -> None:
+    with open(path, "rb") as f:
+        os.fsync(f.fileno())
 
 
 def _entry_key(entry: polib.POEntry) -> tuple[str, str, str]:
@@ -202,7 +208,7 @@ def _set_translation(
     msgstr_plural: Mapping[str, str],
 ) -> None:
     entry.msgstr = str(msgstr)
-    entry.msgstr_plural = {str(k): str(v) for k, v in msgstr_plural.items()}
+    entry.msgstr_plural = kdestate.canonical_plural_map(msgstr_plural)
 
 
 def _is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
@@ -264,7 +270,7 @@ def _is_tool_owned_prefix(prefix: str, *, tool_prefixes: Iterable[str]) -> bool:
     return any(prefix.startswith(tool_prefix) for tool_prefix in tool_prefixes)
 
 
-def _validate_plan_entry(entry_item: object) -> list[str]:
+def _validate_plan_entry(entry_item: object, *, tool_prefixes: list[str]) -> list[str]:
     if not isinstance(entry_item, Mapping):
         return ["plan entry must be an object"]
     errors: list[str] = []
@@ -315,10 +321,20 @@ def _validate_plan_entry(entry_item: object) -> list[str]:
                 errors.append("plan comments remove_prefixes must be a list")
             elif any(not isinstance(prefix, str) for prefix in remove_prefixes):
                 errors.append("plan comments remove_prefixes must be a list of strings")
+            elif any(
+                not _is_tool_owned_prefix(prefix, tool_prefixes=tool_prefixes)
+                for prefix in remove_prefixes
+            ):
+                errors.append("plan comments remove_prefixes must use tool prefixes")
             if not isinstance(ensure_lines, (list, tuple)):
                 errors.append("plan comments ensure_lines must be a list")
             elif any(not isinstance(line, str) for line in ensure_lines):
                 errors.append("plan comments ensure_lines must be a list of strings")
+            elif any(
+                not any(line.startswith(prefix) for prefix in tool_prefixes)
+                for line in ensure_lines
+            ):
+                errors.append("plan comments ensure_lines must use tool prefixes")
             if not isinstance(append, str):
                 errors.append("plan comments append must be a string")
             elif append != "" and not append.endswith("\n"):
@@ -338,7 +354,7 @@ def apply_plan_to_file(
     tool_prefixes = [str(prefix) for prefix in ctx.comment_prefixes]
 
     file_warnings: list[str] = []
-    phase_a = snapshot.locked_read_file(full_path, lock_path)
+    phase_a = snapshot.locked_read_file(full_path, lock_path, relpath=file_path)
     if ctx.mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
         file_warnings.append(f"{file_path}: skipped (strict): base_sha256 mismatch")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
@@ -351,7 +367,7 @@ def apply_plan_to_file(
     mismatch = False
     mismatch_reason: str | None = None
     for index, entry_item in enumerate(plan_items):
-        entry_errors = _validate_plan_entry(entry_item)
+        entry_errors = _validate_plan_entry(entry_item, tool_prefixes=tool_prefixes)
         if entry_errors:
             for error in entry_errors:
                 file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
@@ -361,10 +377,10 @@ def apply_plan_to_file(
             continue
         if action not in {"copy_tm", "llm"}:
             if action:
-                file_warnings.append(f"{file_path}: unsupported action: {action}")
+                file_errors.append(f"{file_path}: unsupported action: {action}")
             else:
-                file_warnings.append(f"{file_path}: unsupported action: missing")
-            continue
+                file_errors.append(f"{file_path}: unsupported action: missing")
+            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
         key = (
             str(entry_item.get("msgctxt", "")),
             str(entry_item.get("msgid", "")),
@@ -406,46 +422,24 @@ def apply_plan_to_file(
         if not _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
             continue
 
-        translation = entry_item.get("translation") if isinstance(entry_item, Mapping) else None
-        if not isinstance(translation, Mapping):
-            entry_key = (
-                str(entry_item.get("msgctxt", "")),
-                str(entry_item.get("msgid", "")),
-                str(entry_item.get("msgid_plural", "")),
-            )
-            file_errors.append(f"plan entry missing translation for action: {entry_key}")
-            break
-        msgstr = str(translation.get("msgstr", ""))
+        translation = entry_item.get("translation")
+        msgstr = translation.get("msgstr", "")
         msgstr_plural = translation.get("msgstr_plural", {})
-        if not isinstance(msgstr_plural, Mapping):
-            msgstr_plural = {}
         _set_translation(entry, msgstr=msgstr, msgstr_plural=msgstr_plural)
 
-        flags = entry_item.get("flags") if isinstance(entry_item, Mapping) else None
-        if isinstance(flags, Mapping):
+        flags = entry_item.get("flags")
+        if flags is not None:
             add_flags = flags.get("add", [])
             remove_flags = flags.get("remove", [])
             _apply_flags(entry, add_flags, remove_flags)
 
-        comments = entry_item.get("comments") if isinstance(entry_item, Mapping) else None
-        if isinstance(comments, Mapping):
+        comments = entry_item.get("comments")
+        if comments is not None:
             remove_prefixes = comments.get("remove_prefixes", [])
             ensure_lines = comments.get("ensure_lines", [])
             append = str(comments.get("append", ""))
             normalized_remove = [str(prefix) for prefix in remove_prefixes]
-            if any(
-                not _is_tool_owned_prefix(prefix, tool_prefixes=tool_prefixes)
-                for prefix in normalized_remove
-            ):
-                file_errors.append("plan comments remove_prefixes must use tool prefixes")
-                break
             normalized_ensure = [str(line) for line in ensure_lines]
-            if any(
-                not any(line.startswith(prefix) for prefix in tool_prefixes)
-                for line in normalized_ensure
-            ):
-                file_errors.append("plan comments ensure_lines must use tool prefixes")
-                break
             _apply_comments(entry, normalized_remove, normalized_ensure, append)
 
         plural_forms = po_file.metadata.get("Plural-Forms")
@@ -480,8 +474,7 @@ def apply_plan_to_file(
 
     try:
         po_file.save(tmp_name)
-        with open(tmp_name, "rb") as tmp_file:
-            os.fsync(tmp_file.fileno())
+        _fsync_file(Path(tmp_name))
     except Exception:
         if Path(tmp_name).exists():
             os.unlink(tmp_name)
@@ -542,6 +535,7 @@ def apply_plan(
         _marker_settings_from_config(config)
     )
     placeholder_patterns = list(config.apply.validation_patterns)
+    compiled_placeholder_patterns = [re.compile(pattern) for pattern in placeholder_patterns]
     ctx = ApplyContext(
         lang=lang,
         mode=selected_mode,
@@ -551,7 +545,7 @@ def apply_plan(
         review_prefix=review_prefix,
         ai_prefix=ai_prefix,
         ai_flag=ai_flag,
-        placeholder_patterns=placeholder_patterns,
+        placeholder_patterns=compiled_placeholder_patterns,
     )
 
     errors = _validate_plan_header(
@@ -684,7 +678,7 @@ def apply_plan(
             if post_index_flag:
                 try:
                     full_path = project_root / file_path
-                    snap = snapshot.locked_read_file(full_path, lock_path)
+                    snap = snapshot.locked_read_file(full_path, lock_path, relpath=file_path)
                     workspace_tm.index_file_snapshot_tm(
                         workspace_conn,
                         file_path=file_path,

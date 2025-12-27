@@ -611,7 +611,7 @@ def index(
                 locks.lock_id(project_id, relpath_key),
             )
             try:
-                locked = snapshot.locked_read_file(path, lock_path)
+                locked = snapshot.locked_read_file(path, lock_path, relpath=relpath)
                 lang = _parse_lang_from_bytes(locked.bytes)
                 if not lang:
                     targets = config.languages.targets

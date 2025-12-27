@@ -96,10 +96,9 @@ class TagIntegrityValidator:
             return None
         plural = bool(msgid_plural)
         for raw_pattern in placeholder_patterns:
-            if isinstance(raw_pattern, re.Pattern):
-                compiled = raw_pattern
-            else:
-                compiled = re.compile(str(raw_pattern))
+            if not isinstance(raw_pattern, re.Pattern):
+                raw_pattern = re.compile(str(raw_pattern))
+            compiled = raw_pattern
             if plural:
                 for key in sorted(msgstr_plural.keys(), key=_plural_key_sorter):
                     source_text = msgid if str(key) == "0" else msgid_plural
@@ -116,13 +115,13 @@ class TagIntegrityValidator:
 
 
 def validate_entry(
-        *,
-        msgid: str,
-        msgid_plural: str,
-        msgstr: str,
-        msgstr_plural: Mapping[str, str],
-        plural_forms: str | None,
-        placeholder_patterns: Iterable[str | Pattern[str]],
+    *,
+    msgid: str,
+    msgid_plural: str,
+    msgstr: str,
+    msgstr_plural: Mapping[str, str],
+    plural_forms: str | None,
+    placeholder_patterns: Iterable[str | Pattern[str]],
 ) -> list[str]:
     validators = [
         NonEmptyValidator(),
