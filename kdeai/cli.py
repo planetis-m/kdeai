@@ -332,7 +332,9 @@ def plan(
     except ValueError as exc:
         _exit_with_error(str(exc))
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
-    builder = kdeplan.PlanBuilder(
+    files_payload: list[dict] = []
+    plan_payload: dict | None = None
+    with kdeplan.PlanBuilder(
         project_root=project_root,
         project_id=str(project.project_data["project_id"]),
         config=config,
@@ -342,11 +344,7 @@ def plan(
         glossary_mode=resolved_glossary_mode,
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
-    )
-
-    files_payload: list[dict] = []
-    plan_payload: dict | None = None
-    try:
+    ) as builder:
         for path in _iter_po_paths(project_root, paths):
             file_draft = kdeplan.generate_plan_for_file(
                 project_root=project_root,
@@ -365,8 +363,6 @@ def plan(
             apply_defaults=apply_cfg,
         )
         plan_payload["files"] = files_payload
-    finally:
-        builder.close()
 
     if plan_payload is None:
         _exit_with_error("Plan failed.")
@@ -484,7 +480,11 @@ def translate(
         apply_mode_default=apply_mode,
     )
 
-    builder = kdeplan.PlanBuilder(
+    files_payload: list[dict] = []
+    total_entries_applied = 0
+    files_written: list[str] = []
+    files_skipped: list[str] = []
+    with kdeplan.PlanBuilder(
         project_root=project_root,
         project_id=str(project.project_data["project_id"]),
         config=config,
@@ -495,22 +495,14 @@ def translate(
         session_tm={},
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
-    )
-
-    files_payload: list[dict] = []
-    session_tm = builder.session_tm
-    total_entries_applied = 0
-    files_written: list[str] = []
-    files_skipped: list[str] = []
-
-    plan_header = _build_plan_header(
-        project=project,
-        lang=lang,
-        builder=builder,
-        apply_defaults=apply_defaults,
-    )
-
-    try:
+    ) as builder:
+        session_tm = builder.session_tm
+        plan_header = _build_plan_header(
+            project=project,
+            lang=lang,
+            builder=builder,
+            apply_defaults=apply_defaults,
+        )
         for path in _iter_po_paths(project_root, paths):
             file_plan = kdeplan.generate_plan_for_file(
                 project_root=project_root,
@@ -555,8 +547,6 @@ def translate(
             files_payload.sort(key=lambda item: str(item.get("file_path", "")))
             combined_plan["files"] = files_payload
             kdeplan.write_plan(out, combined_plan)
-    finally:
-        builder.close()
 
     typer.echo(
         f"Applied {total_entries_applied} entries "
@@ -578,7 +568,7 @@ def index(
         _exit_with_error(f"Index failed: {exc}")
 
     project_id = str(project.project_data["project_id"])
-    path_casefold = bool(project.project_data.get("path_casefold"))
+    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     conn = _ensure_workspace_db(
         project_root,
         project_id=project_id,
@@ -879,7 +869,7 @@ def glossary_build(
                 "Glossary DB already exists for reference snapshot "
                 f"{reference_snapshot_id}. Rebuild reference snapshot or use --skip-if-current."
             )
-        kdeglossary_path = kdeglo.build_glossary_db(
+        kdeglo.build_glossary_db(
             reference_conn,
             output_path=output_path,
             config=config,

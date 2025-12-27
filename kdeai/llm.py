@@ -135,8 +135,8 @@ def batch_translate(
             translated_text=translated_text,
             translated_plural=translated_plural,
         )
-        entry["action"] = PlanAction.LLM
-        entry["tag_profile"] = "llm"
+        entry.setdefault("action", PlanAction.LLM)
+        entry.setdefault("tag_profile", "llm")
         updated.append(entry)
 
     return updated
