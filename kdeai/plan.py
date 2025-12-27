@@ -12,7 +12,7 @@ import sys
 import polib
 
 from kdeai import apply as kdeapply
-from kdeai.config import Config, ExamplesEligibility
+from kdeai.config import Config
 from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import hash as kdehash
@@ -20,6 +20,7 @@ from kdeai import locks
 from kdeai import po_utils
 from kdeai import po_model
 from kdeai import prompt as kdeprompt
+from kdeai import retrieve_examples
 from kdeai import retrieve_tm
 from kdeai import snapshot
 from kdeai.tm_types import SessionTmView
@@ -173,7 +174,7 @@ class PlanBuilder:
                 continue
 
             source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
-            examples = _collect_examples(
+            examples = retrieve_examples.collect_examples(
                 examples_db=self.assets.examples_db,
                 embedder=self.embedder,
                 source_text=source_text,
@@ -424,66 +425,6 @@ def _open_reference_tm(
     return conn
 
 
-def _examples_pointer_path(
-    project_root: Path,
-    *,
-    scope: str,
-    lang: str,
-) -> Path:
-    return (
-        project_root
-        / ".kdeai"
-        / "cache"
-        / "examples"
-        / scope
-        / f"examples.{scope}.{lang}.current.json"
-    )
-
-
-def _open_examples_db(
-    project_root: Path,
-    *,
-    scope: str,
-    lang: str,
-    project_id: str,
-    config_hash: str,
-    embed_policy_hash: str,
-    sqlite_vector_path: str | None,
-    required: bool,
-) -> kdeexamples.ExamplesDb | None:
-    pointer_path = _examples_pointer_path(project_root, scope=scope, lang=lang)
-    if not pointer_path.exists():
-        return None
-    try:
-        pointer = _read_json(pointer_path, f"examples {scope} pointer")
-    except Exception as exc:
-        logger.debug("Examples pointer read failed: %s", exc)
-        return None
-    db_file = pointer.get("db_file")
-    if not db_file:
-        return None
-    db_path = pointer_path.parent / str(db_file)
-    if not db_path.exists():
-        return None
-    try:
-        return kdeexamples.open_examples_db(
-            db_path,
-            project_id=project_id,
-            config_hash=config_hash,
-            embed_policy_hash=embed_policy_hash,
-            sqlite_vector_path=sqlite_vector_path,
-        )
-    except Exception as exc:
-        message = (
-            "examples required but DB open/validation failed for "
-            f"scope={scope} lang={lang}"
-        )
-        if required:
-            raise RuntimeError(message) from exc
-        logger.debug("Examples DB open failed: %s", exc)
-        return None
-
-
 def _open_glossary_db(
     project_root: Path,
     *,
@@ -562,7 +503,7 @@ def _build_assets(
     examples_db = None
     if examples_mode != "off" and cache != "off" and embedder is not None:
         for scope in examples_scopes:
-            examples_db = _open_examples_db(
+            examples_db = retrieve_examples.open_examples_best_effort(
                 project_root,
                 scope=scope,
                 lang=lang,
@@ -630,43 +571,6 @@ def _build_assets(
         str(examples_mode),
         str(glossary_mode),
     )
-
-
-def _collect_examples(
-    *,
-    examples_db: kdeexamples.ExamplesDb | None,
-    embedder: EmbeddingFunc | None,
-    source_text: str,
-    top_n: int,
-    lang: str,
-    eligibility: ExamplesEligibility,
-    review_status_order: Sequence[str],
-    required: bool,
-) -> list[kdeexamples.ExampleMatch]:
-    if examples_db is None or embedder is None:
-        return []
-    try:
-        embeddings = embedder([source_text])
-        if len(embeddings) != 1:
-            raise ValueError("expected single embedding")
-        embedding = embeddings[0]
-    except Exception:
-        if required:
-            raise RuntimeError("examples required but embedding failed")
-        return []
-    try:
-        return kdeexamples.query_examples(
-            examples_db,
-            query_embedding=embedding,
-            top_n=top_n,
-            lang=lang,
-            eligibility=eligibility,
-            review_status_order=review_status_order,
-        )
-    except Exception as exc:
-        if required:
-            raise RuntimeError("examples required but query failed") from exc
-        return []
 
 
 def _collect_glossary(

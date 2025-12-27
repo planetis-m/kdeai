@@ -66,7 +66,7 @@ def _load_env_if_missing(keys: list[str]) -> None:
             os.environ[name] = value.strip()
 
 
-def test_batch_translate_plan_updates_llm_entries() -> None:
+def test_batch_translate_plan_updates_needs_llm_entries() -> None:
     _load_env_if_missing(["OPENROUTER_API_KEY"])
     if not os.getenv("OPENROUTER_API_KEY"):
         raise AssertionError("OPENROUTER_API_KEY must be set for DSPy usage")
@@ -87,7 +87,7 @@ def test_batch_translate_plan_updates_llm_entries() -> None:
                         "msgctxt": "",
                         "msgid": "File",
                         "msgid_plural": "",
-                        "action": "llm",
+                        "action": "needs_llm",
                         "prompt": {
                             "source_context": "",
                             "source_text": "File",
@@ -107,7 +107,7 @@ def test_batch_translate_plan_updates_llm_entries() -> None:
                         "msgctxt": "",
                         "msgid": "Files",
                         "msgid_plural": "Files",
-                        "action": "llm",
+                        "action": "needs_llm",
                         "prompt": {
                             "source_context": "",
                             "source_text": "Files",
@@ -172,3 +172,67 @@ def test_batch_translate_plan_updates_llm_entries() -> None:
     assert singular["flags"]["remove"] == ["old"]
     assert "KDEAI-AI:" in singular["comments"]["remove_prefixes"]
     assert "KDEAI-AI: model=openrouter/x-ai/grok-4-fast" in singular["comments"]["ensure_lines"]
+
+
+def test_batch_translate_plan_adds_prompt_and_tags_for_needs_llm() -> None:
+    _load_env_if_missing(["OPENROUTER_API_KEY"])
+    if not os.getenv("OPENROUTER_API_KEY"):
+        raise AssertionError("OPENROUTER_API_KEY must be set for DSPy usage")
+    warnings.filterwarnings(
+        "ignore",
+        message="Pydantic serializer warnings:*",
+        category=UserWarning,
+        module="pydantic",
+    )
+
+    plan = {
+        "lang": "de",
+        "files": [
+            {
+                "file_path": "locale/de.po",
+                "entries": [
+                    {
+                        "msgctxt": "",
+                        "msgid": "Save",
+                        "msgid_plural": "",
+                        "action": "needs_llm",
+                        "examples": "ctx:\\nid:Save\\npl:",
+                        "glossary_terms": "Save -> Speichern",
+                    }
+                ],
+            }
+        ],
+    }
+
+    config = build_config(
+        {
+            "prompt": {"generation_model_id": "openrouter/x-ai/grok-4-fast"},
+            "apply": {
+                "tagging": {
+                    "llm": {
+                        "add_flags": ["fuzzy"],
+                        "add_ai_flag": True,
+                        "comment_prefix_key": "ai",
+                    }
+                }
+            },
+        }
+    )
+
+    from kdeai import llm as kdellm
+    original_forward = kdellm.KDEAITranslator.forward
+    try:
+        def _fake_forward(self, _prompt):
+            return types.SimpleNamespace(translated_text="Speichern", translated_plural="")
+
+        kdellm.KDEAITranslator.forward = _fake_forward
+        batch_translate_plan(plan, config)
+    finally:
+        kdellm.KDEAITranslator.forward = original_forward
+
+    entry = plan["files"][0]["entries"][0]
+    assert entry["action"] == "llm"
+    assert entry["translation"]["msgstr"].strip()
+    assert entry["translation"]["msgstr_plural"] == {}
+    assert entry["flags"]["add"]
+    assert entry["comments"]["ensure_lines"]

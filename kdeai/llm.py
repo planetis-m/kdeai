@@ -140,13 +140,13 @@ def _apply_llm_tagging(
     }
 
 
-def _prompt_for_entry(
+def build_prompt_payload(
     entry: Mapping[str, object],
-    prompt_data: Mapping[str, object] | None,
     *,
     target_lang: str,
 ) -> dict[str, object]:
     prompt_payload: dict[str, object] = {}
+    prompt_data = entry.get("prompt")
     if isinstance(prompt_data, Mapping):
         for key in (
             "source_context",
@@ -159,20 +159,14 @@ def _prompt_for_entry(
             if key in prompt_data:
                 prompt_payload[key] = prompt_data.get(key)
 
-    prompt_payload.setdefault("source_context", entry.get("msgctxt", ""))
-    prompt_payload.setdefault("source_text", entry.get("msgid", ""))
-    prompt_payload.setdefault("plural_text", entry.get("msgid_plural", ""))
-    prompt_payload.setdefault("target_lang", target_lang)
-    prompt_payload.setdefault("glossary_context", "")
-    prompt_payload.setdefault("few_shot_examples", "")
-    return prompt_payload
+        prompt_payload.setdefault("source_context", entry.get("msgctxt", ""))
+        prompt_payload.setdefault("source_text", entry.get("msgid", ""))
+        prompt_payload.setdefault("plural_text", entry.get("msgid_plural", ""))
+        prompt_payload.setdefault("target_lang", target_lang)
+        prompt_payload.setdefault("glossary_context", "")
+        prompt_payload.setdefault("few_shot_examples", "")
+        return prompt_payload
 
-
-def _prompt_payload_from_context(
-    entry: Mapping[str, object],
-    *,
-    target_lang: str,
-) -> dict[str, object]:
     def _text(value: object) -> str:
         return "" if value is None else str(value)
 
@@ -219,10 +213,7 @@ def batch_translate(
             continue
         if str(entry.get("action", "")) != "needs_llm":
             continue
-        prompt_payload = _prompt_payload_from_context(
-            entry,
-            target_lang=normalized_lang,
-        )
+        prompt_payload = build_prompt_payload(entry, target_lang=normalized_lang)
         prediction = translator(prompt_payload)
         translated_text = str(getattr(prediction, "translated_text", ""))
         translated_plural = str(getattr(prediction, "translated_plural", ""))
@@ -261,14 +252,9 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
         for entry in entries:
             if not isinstance(entry, MutableMapping):
                 continue
-            if str(entry.get("action", "")) != "llm":
+            if str(entry.get("action", "")) != "needs_llm":
                 continue
-            prompt_raw = entry.get("prompt")
-            prompt_payload = _prompt_for_entry(
-                entry,
-                prompt_raw if isinstance(prompt_raw, Mapping) else None,
-                target_lang=target_lang,
-            )
+            prompt_payload = build_prompt_payload(entry, target_lang=target_lang)
             prediction = translator(prompt_payload)
             translated_text = str(getattr(prediction, "translated_text", ""))
             translated_plural = str(getattr(prediction, "translated_plural", ""))
@@ -279,6 +265,8 @@ def batch_translate_plan(plan: Plan, config: Config) -> Plan:
                 translated_text=translated_text,
                 translated_plural=translated_plural,
             )
+            entry["prompt"] = prompt_payload
+            entry["action"] = "llm"
             _apply_llm_tagging(entry, config=config, model_id=model_id)
 
     return plan

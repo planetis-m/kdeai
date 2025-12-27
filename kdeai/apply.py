@@ -298,6 +298,10 @@ def _update_session_tm(
         }
 
 
+def _is_tool_owned_prefix(prefix: str, *, tool_prefixes: Iterable[str]) -> bool:
+    return any(prefix.startswith(tool_prefix) for tool_prefix in tool_prefixes)
+
+
 def apply_plan_to_file(
     file_path: str,
     plan_items: list,
@@ -308,7 +312,7 @@ def apply_plan_to_file(
     base_sha256: str,
 ) -> ApplyFileResult:
     tool_prefixes = [str(prefix) for prefix in ctx.comment_prefixes]
-    tool_prefix_set = set(tool_prefixes)
+
     file_warnings: list[str] = []
     phase_a = snapshot.locked_read_file(full_path, lock_path)
     if ctx.mode == "strict" and (not base_sha256 or phase_a.sha256 != base_sha256):
@@ -416,10 +420,10 @@ def apply_plan_to_file(
                 file_errors.append("plan comments append must end with \\n")
                 break
             normalized_remove = [str(prefix) for prefix in remove_prefixes]
-            def _is_tool_owned_prefix(prefix: str) -> bool:
-                return any(prefix.startswith(tool_prefix) for tool_prefix in tool_prefixes)
-
-            if any(not _is_tool_owned_prefix(prefix) for prefix in normalized_remove):
+            if any(
+                not _is_tool_owned_prefix(prefix, tool_prefixes=tool_prefixes)
+                for prefix in normalized_remove
+            ):
                 file_errors.append("plan comments remove_prefixes must use tool prefixes")
                 break
             normalized_ensure = [str(line) for line in ensure_lines]
@@ -476,8 +480,6 @@ def apply_plan_to_file(
             current_sha = hashlib.sha256(current_bytes).hexdigest()
             if current_sha != phase_a.sha256:
                 file_warnings.append(f"{file_path}: skipped: file changed since phase A")
-                result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
-            elif ctx.mode == "strict" and current_sha != base_sha256:
                 result = ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
             else:
                 os.replace(tmp_name, full_path)
