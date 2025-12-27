@@ -9,6 +9,7 @@ import tempfile
 import polib
 
 from kdeai.config import Config
+from kdeai.constants import ReviewStatus
 
 DEFAULT_COMMENT_PREFIXES = [
     "KDEAI:",
@@ -46,6 +47,52 @@ def tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
 def is_reviewed(entry: polib.POEntry, review_prefix: str) -> bool:
     lines = tool_comment_lines(entry.tcomment, [review_prefix])
     return bool(lines)
+
+
+def derive_review_status(
+    msgstr: str,
+    msgstr_plural: Mapping[str, str],
+    has_plural: bool,
+    flags: Iterable[str],
+    tcomment: str | None,
+    review_prefix: str,
+) -> str:
+    non_empty = is_translation_non_empty(msgstr, msgstr_plural, has_plural)
+    if not non_empty:
+        return ReviewStatus.UNREVIEWED
+    if "fuzzy" in flags:
+        return ReviewStatus.NEEDS_REVIEW
+    if tool_comment_lines(tcomment, [review_prefix]):
+        return ReviewStatus.REVIEWED
+    return ReviewStatus.DRAFT
+
+
+def derive_review_status_entry(entry: polib.POEntry, review_prefix: str) -> str:
+    return derive_review_status(
+        entry.msgstr or "",
+        entry.msgstr_plural or {},
+        bool(entry.msgid_plural),
+        entry.flags,
+        entry.tcomment,
+        review_prefix,
+    )
+
+
+def derive_is_ai_generated(
+    flags: Iterable[str],
+    tcomment: str | None,
+    ai_flag: str,
+    ai_prefix: str,
+) -> int:
+    if ai_flag in flags:
+        return 1
+    if tool_comment_lines(tcomment, [ai_prefix]):
+        return 1
+    return 0
+
+
+def derive_is_ai_generated_entry(entry: polib.POEntry, ai_flag: str, ai_prefix: str) -> int:
+    return derive_is_ai_generated(entry.flags, entry.tcomment, ai_flag, ai_prefix)
 
 
 def is_translation_non_empty(

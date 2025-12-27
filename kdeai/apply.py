@@ -20,7 +20,7 @@ from kdeai.config import Config
 from kdeai import snapshot
 from kdeai import validate
 from kdeai import workspace_tm
-from kdeai.constants import ApplyMode, OverwritePolicy, PlanAction, PostIndex, ReviewStatus, TmScope
+from kdeai.constants import ApplyMode, OverwritePolicy, PlanAction, PostIndex, TmScope
 from kdeai.tm_types import SessionTm
 
 ALLOWED_OVERWRITE_POLICIES = {
@@ -142,10 +142,6 @@ def _validate_plan_header(
                 errors.append("plan placeholder_patterns do not match config")
 
     return errors
-
-
-def _load_po_from_bytes(data: bytes) -> polib.POFile:
-    return po_utils.load_po_from_bytes(data)
 
 
 def _fsync_file(path: Path) -> None:
@@ -300,29 +296,6 @@ def _can_overwrite(current_non_empty: bool, reviewed: bool, overwrite: str) -> b
     return po_utils.can_overwrite(current_non_empty, reviewed, overwrite)
 
 
-def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
-    non_empty = po_utils.is_translation_non_empty(
-        entry.msgstr or "",
-        entry.msgstr_plural or {},
-        bool(entry.msgid_plural),
-    )
-    if not non_empty:
-        return ReviewStatus.UNREVIEWED
-    if "fuzzy" in entry.flags:
-        return ReviewStatus.NEEDS_REVIEW
-    if po_utils.is_reviewed(entry, review_prefix):
-        return ReviewStatus.REVIEWED
-    return ReviewStatus.DRAFT
-
-
-def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) -> int:
-    if ai_flag in entry.flags:
-        return 1
-    if po_utils.tool_comment_lines(entry.tcomment, [ai_prefix]):
-        return 1
-    return 0
-
-
 def _update_session_tm(
     session_tm: SessionTm,
     *,
@@ -335,8 +308,8 @@ def _update_session_tm(
     for entry in entries:
         source_key = po_model.source_key_for(entry.msgctxt, entry.msgid, entry.msgid_plural)
         msgstr_plural = kdestate.canonical_plural_map(entry.msgstr_plural)
-        review_status = _derive_review_status(entry, review_prefix)
-        is_ai_generated = _derive_is_ai_generated(entry, ai_flag, ai_prefix)
+        review_status = po_utils.derive_review_status_entry(entry, review_prefix)
+        is_ai_generated = po_utils.derive_is_ai_generated_entry(entry, ai_flag, ai_prefix)
         translation_hash = kdehash.translation_hash(source_key, lang, entry.msgstr or "", msgstr_plural)
         session_tm[(source_key, lang)] = {
             "msgstr": entry.msgstr or "",
@@ -405,7 +378,7 @@ def apply_plan_to_file(
         file_warnings.append(f"{file_path}: skipped (strict): base_sha256 mismatch")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
-    po_file = _load_po_from_bytes(phase_a.bytes)
+    po_file = po_model.load_po_from_bytes(phase_a.bytes)
     entry_map: dict[tuple[str, str, str], polib.POEntry] = {}
     duplicate_keys: list[tuple[str, str, str]] = []
     for entry in po_file:

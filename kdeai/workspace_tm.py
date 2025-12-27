@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping
 import sqlite3
 
 from kdeai import hash as kdehash
 from kdeai.config import Config
 from kdeai import po_model
+from kdeai import po_utils
 from kdeai.constants import ReviewStatus
 
 DEFAULT_REVIEW_STATUS_ORDER = [
@@ -33,51 +34,6 @@ def _marker_settings_from_config(config: Config | None) -> tuple[str, str, str]:
         return DEFAULT_REVIEW_PREFIX, DEFAULT_AI_PREFIX, DEFAULT_AI_FLAG
     prefixes = config.markers.comment_prefixes
     return prefixes.review, prefixes.ai, config.markers.ai_flag
-
-
-def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
-    if not text:
-        return []
-    lines = [line.rstrip("\n") for line in text.replace("\r\n", "\n").split("\n")]
-    selected = []
-    for line in lines:
-        for prefix in prefixes:
-            if line.startswith(prefix):
-                selected.append(line)
-                break
-    return selected
-
-
-def _derive_review_status(
-    msgstr: str,
-    msgstr_plural: Mapping[str, str],
-    has_plural: bool,
-    flags: Sequence[str],
-    tcomment: str,
-    review_prefix: str,
-) -> str:
-    if has_plural:
-        if any(str(value).strip() for value in msgstr_plural.values()):
-            non_empty = True
-        else:
-            non_empty = False
-    else:
-        non_empty = msgstr.strip() != ""
-    if not non_empty:
-        return ReviewStatus.UNREVIEWED
-    if "fuzzy" in flags:
-        return ReviewStatus.NEEDS_REVIEW
-    if _tool_comment_lines(tcomment, [review_prefix]):
-        return ReviewStatus.REVIEWED
-    return ReviewStatus.DRAFT
-
-
-def _derive_is_ai_generated(flags: Sequence[str], tcomment: str, ai_flag: str, ai_prefix: str) -> int:
-    if ai_flag in flags:
-        return 1
-    if _tool_comment_lines(tcomment, [ai_prefix]):
-        return 1
-    return 0
 
 
 def _selection_key(
@@ -233,7 +189,7 @@ def index_file_snapshot_tm(
 
             msgstr_plural_json = kdehash.canonical_msgstr_plural(unit.msgstr_plural)
             has_plural = unit.msgid_plural != ""
-            review_status = _derive_review_status(
+            review_status = po_utils.derive_review_status(
                 unit.msgstr,
                 unit.msgstr_plural,
                 has_plural,
@@ -241,7 +197,12 @@ def index_file_snapshot_tm(
                 unit.tcomment,
                 review_prefix,
             )
-            is_ai_generated = _derive_is_ai_generated(unit.flags, unit.tcomment, ai_flag, ai_prefix)
+            is_ai_generated = po_utils.derive_is_ai_generated(
+                unit.flags,
+                unit.tcomment,
+                ai_flag,
+                ai_prefix,
+            )
             translation_hash = kdehash.translation_hash(
                 unit.source_key,
                 lang,

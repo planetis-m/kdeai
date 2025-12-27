@@ -40,7 +40,7 @@ def source_text_v1(msgctxt: str | None, msgid: str, msgid_plural: str | None) ->
     return f"ctx:{norm_ctxt}\nid:{msgid}\npl:{norm_plural}"
 
 
-def _iter_translation_entries(po_file: polib.POFile) -> Iterable[polib.POEntry]:
+def iter_active_entries(po_file: polib.POFile) -> Iterable[polib.POEntry]:
     for entry in po_file:
         if entry.obsolete:
             continue
@@ -70,7 +70,7 @@ def _po_entry_to_unit(entry: polib.POEntry) -> PoUnit:
     )
 
 
-def _load_po_from_bytes(data: bytes) -> polib.POFile:
+def load_po_from_bytes(data: bytes) -> polib.POFile:
     with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
         tmp.write(data)
         tmp_path = tmp.name
@@ -81,10 +81,10 @@ def _load_po_from_bytes(data: bytes) -> polib.POFile:
 
 
 def parse_po_bytes(data: bytes) -> list[PoUnit]:
-    po_file = _load_po_from_bytes(data)
-    return [_po_entry_to_unit(entry) for entry in _iter_translation_entries(po_file)]
+    po_file = load_po_from_bytes(data)
+    return [_po_entry_to_unit(entry) for entry in iter_active_entries(po_file)]
 
 
 def parse_po_path(path: Path) -> list[PoUnit]:
     po_file = polib.pofile(str(path))
-    return [_po_entry_to_unit(entry) for entry in _iter_translation_entries(po_file)]
+    return [_po_entry_to_unit(entry) for entry in iter_active_entries(po_file)]

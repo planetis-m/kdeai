@@ -3,11 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence
 import json
-import os
 import sqlite3
-import tempfile
 
 import polib
 
@@ -17,6 +15,7 @@ from kdeai import db as kdedb
 from kdeai import hash as kdehash
 from kdeai import locks
 from kdeai import po_model
+from kdeai import po_utils
 from kdeai import snapshot
 from kdeai.constants import DbKind, REFERENCE_TM_SCHEMA_VERSION, ReviewStatus
 
@@ -34,61 +33,6 @@ class ReferenceSnapshot:
     snapshot_id: int
     db_path: Path
     created_at: str
-
-
-def _load_po_from_bytes(data: bytes) -> polib.POFile:
-    with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
-        tmp.write(data)
-        tmp_path = tmp.name
-    try:
-        return polib.pofile(tmp_path)
-    finally:
-        os.unlink(tmp_path)
-
-
-def _iter_translation_entries(po_file: polib.POFile) -> Iterable[polib.POEntry]:
-    for entry in po_file:
-        if entry.obsolete:
-            continue
-        if entry.msgid == "":
-            continue
-        yield entry
-
-
-def _tool_comment_lines(text: str | None, prefixes: Iterable[str]) -> list[str]:
-    if not text:
-        return []
-    lines = [line.rstrip("\n") for line in text.replace("\r\n", "\n").split("\n")]
-    selected = []
-    for line in lines:
-        for prefix in prefixes:
-            if line.startswith(prefix):
-                selected.append(line)
-                break
-    return selected
-
-
-def _derive_review_status(entry: polib.POEntry, review_prefix: str) -> str:
-    has_plural = bool(entry.msgid_plural)
-    if has_plural:
-        non_empty = any(str(value).strip() for value in entry.msgstr_plural.values())
-    else:
-        non_empty = (entry.msgstr or "").strip() != ""
-    if not non_empty:
-        return ReviewStatus.UNREVIEWED
-    if "fuzzy" in entry.flags:
-        return ReviewStatus.NEEDS_REVIEW
-    if _tool_comment_lines(entry.tcomment, [review_prefix]):
-        return ReviewStatus.REVIEWED
-    return ReviewStatus.DRAFT
-
-
-def _derive_is_ai_generated(entry: polib.POEntry, ai_flag: str, ai_prefix: str) -> int:
-    if ai_flag in entry.flags:
-        return 1
-    if _tool_comment_lines(entry.tcomment, [ai_prefix]):
-        return 1
-    return 0
 
 
 def _marker_settings_from_config(config: Config) -> tuple[str, str, str]:
@@ -230,14 +174,14 @@ def build_reference_snapshot(
             locks.lock_id(project_id, relpath_key),
         )
         locked = snapshot.locked_read_file(path, lock_path, relpath=relpath)
-        po_file = _load_po_from_bytes(locked.bytes)
+        po_file = po_model.load_po_from_bytes(locked.bytes)
         lang = _lang_from_po(po_file, config)
         if not lang:
             raise ValueError(f"unable to infer language for {relpath}")
 
         sources_payload: list[tuple[str, str, str, str, str]] = []
         translations_payload: list[tuple[str, str, str, str, str, str, str, int, str]] = []
-        for entry in _iter_translation_entries(po_file):
+        for entry in po_model.iter_active_entries(po_file):
             msgctxt = entry.msgctxt or ""
             msgid = entry.msgid
             msgid_plural = entry.msgid_plural or ""
@@ -246,8 +190,8 @@ def build_reference_snapshot(
             source_key = po_model.source_key_for(msgctxt, msgid, msgid_plural)
             source_text = po_model.source_text_v1(msgctxt, msgid, msgid_plural)
             msgstr_plural_json = kdehash.canonical_msgstr_plural(msgstr_plural)
-            review_status = _derive_review_status(entry, review_prefix)
-            is_ai_generated = _derive_is_ai_generated(entry, ai_flag, ai_prefix)
+            review_status = po_utils.derive_review_status_entry(entry, review_prefix)
+            is_ai_generated = po_utils.derive_is_ai_generated_entry(entry, ai_flag, ai_prefix)
             translation_hash = kdehash.translation_hash(
                 source_key, lang, msgstr, msgstr_plural
             )
