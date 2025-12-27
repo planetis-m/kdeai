@@ -184,12 +184,12 @@ class Config(_BaseModel):
 
     def examples_runtime_settings(
         self,
-    ) -> tuple[list[str], int, str, ExamplesEligibility]:
+    ) -> tuple[list[ExamplesScope], int, AssetMode, ExamplesEligibility]:
         examples = self.prompt.examples
         return (
             list(examples.lookup_scopes),
             int(examples.top_n),
-            str(examples.mode_default),
+            examples.mode_default,
             examples.eligibility,
         )
 

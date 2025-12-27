@@ -145,6 +145,15 @@ class PlanBuilder:
             total_entries += 1
             current_non_empty = po_utils.has_non_empty_translation(entry)
             reviewed = po_utils.is_reviewed(entry, self.review_prefix)
+            msgctxt = entry.msgctxt or ""
+            msgid = entry.msgid
+            msgid_plural = entry.msgid_plural or ""
+            base_state_hash = kdestate.entry_state_hash(
+                entry,
+                lang=self.lang,
+                marker_flags=marker_flags,
+                comment_prefixes=comment_prefixes,
+            )
             if not po_utils.can_overwrite(current_non_empty, reviewed, self.selected_overwrite):
                 skipped_overwrite += 1
                 entries_payload.append(
@@ -158,15 +167,6 @@ class PlanBuilder:
                     }
                 )
                 continue
-            msgctxt = entry.msgctxt or ""
-            msgid = entry.msgid
-            msgid_plural = entry.msgid_plural or ""
-            base_state_hash = kdestate.entry_state_hash(
-                entry,
-                lang=self.lang,
-                marker_flags=marker_flags,
-                comment_prefixes=comment_prefixes,
-            )
             source_key = po_model.source_key_for(msgctxt, msgid, msgid_plural)
             has_plural = bool(msgid_plural)
             tm_candidate = retrieve_tm.lookup_tm_exact(
@@ -511,8 +511,6 @@ def _build_assets(
     )
     if examples_mode is None:
         examples_mode = examples_default
-    if examples_mode not in {"off", "auto", "required"}:
-        raise ValueError(f"unsupported examples mode: {examples_mode}")
 
     if examples_mode == "required":
         if embedder is None:
@@ -544,13 +542,11 @@ def _build_assets(
     )
     if glossary_mode is None:
         glossary_mode = glossary_default
-    if glossary_mode not in {"off", "auto", "required"}:
-        raise ValueError(f"unsupported glossary mode: {glossary_mode}")
 
     glossary_matcher: object | None = None
     glossary_conn = None
     if glossary_mode != "off" and cache != "off":
-        if TmScope.REFERENCE in glossary_scopes:
+        if "reference" in glossary_scopes:
             glossary_conn = _open_glossary_db(
                 project_root,
                 project_id=project_id,

@@ -1121,6 +1121,49 @@ class TestApplyAdditionalCases(unittest.TestCase):
             updated_entry = updated.find("File", msgctxt="menu")
             self.assertEqual(updated_entry.msgstr, "")
 
+    def test_skip_action_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            po_path = root / "locale" / "de.po"
+            po_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sample_po(po_path)
+
+            base_bytes = po_path.read_bytes()
+            base_sha256 = hashlib.sha256(base_bytes).hexdigest()
+            po_file = polib.pofile(str(po_path))
+            entry = po_file.find("File", msgctxt="menu")
+            config = build_config()
+            base_state_hash = _entry_state_hash(entry, lang="de", config=config)
+            config = build_config()
+
+            plan_payload = self._build_plan(
+                file_path="locale/de.po",
+                base_sha256=base_sha256,
+                base_state_hash=base_state_hash,
+                msgctxt="menu",
+                msgid="File",
+                translation={"msgstr": "Datei", "msgstr_plural": {}},
+                config_hash=config.config_hash,
+                action="skip",
+            )
+
+            result = apply.apply_plan(
+                plan_payload,
+                project_root=root,
+                project_id="proj",
+                path_casefold=False,
+                config=config,
+                apply_mode="strict",
+                overwrite="conservative",
+            )
+
+            self.assertEqual(result.files_written, [])
+            self.assertEqual(result.files_skipped, ["locale/de.po"])
+            self.assertEqual(result.errors, [])
+            updated = polib.pofile(str(po_path))
+            updated_entry = updated.find("File", msgctxt="menu")
+            self.assertEqual(updated_entry.msgstr, "")
+
     def test_apply_uses_single_temp_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

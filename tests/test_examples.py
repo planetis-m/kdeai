@@ -79,7 +79,8 @@ class TestExamplesEligibility(unittest.TestCase):
         rows = [
             (
                 "key1",
-                "ctx:\nid:Hello\npl:",
+                "",
+                "Hello",
                 "",
                 "de",
                 "",
@@ -242,7 +243,8 @@ class TestQueryExamples(unittest.TestCase):
         rows = [
             (
                 "key1",
-                "ctx:\nid:Hello\npl:",
+                "",
+                "Hello",
                 "",
                 "de",
                 "Hallo",
@@ -274,7 +276,8 @@ class TestQueryExamples(unittest.TestCase):
         rows = [
             (
                 "key1",
-                "ctx:\nid:Hello\npl:",
+                "",
+                "Hello",
                 "",
                 "de",
                 "Hallo",
@@ -416,7 +419,8 @@ class TestExamplesDb(unittest.TestCase):
         rows = [
             (
                 "key1",
-                "ctx:\nid:Hello\npl:",
+                "",
+                "Hello",
                 "",
                 "de",
                 "Hallo",
@@ -604,7 +608,8 @@ class TestExamplesDb(unittest.TestCase):
         rows = [
             (
                 "key1",
-                "ctx:\nid:Hello\npl:",
+                "",
+                "Hello",
                 "",
                 "de",
                 "Hallo",
@@ -653,7 +658,8 @@ class TestExamplesDb(unittest.TestCase):
         rows = [
             (
                 "key1",
-                "ctx:\nid:Hello\npl:",
+                "",
+                "Hello",
                 "",
                 "de",
                 "Hallo",
