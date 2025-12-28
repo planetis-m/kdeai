@@ -141,6 +141,45 @@ def _load_project(project_root: Path, command_name: str) -> Project:
         _exit_with_error(f"{command_name} failed: {exc}")
 
 
+def get_planner_context(
+    *,
+    project_root: Path,
+    command_name: str,
+    cache: Optional[CacheModeLiteral],
+    cache_write: Optional[CacheModeLiteral],
+    examples: Optional[AssetModeLiteral],
+    glossary: Optional[AssetModeLiteral],
+) -> tuple[Config, str, kdeplan.PlannerOptions, bool]:
+    project = _load_project(project_root, command_name)
+    config = project.config
+    project_id = str(project.project_data["project_id"])
+    cache_mode = cache or CacheMode.ON
+    cache_write_flag = cache_write or CacheMode.ON
+    if cache_write_flag == CacheMode.OFF:
+        _note_cache_write_noop(command_name.lower())
+    try:
+        resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
+            kdeplan.resolve_planner_inputs(
+                cache_mode=cache_mode,
+                examples=examples,
+                glossary=glossary,
+                config=config,
+                project_root=project_root,
+            )
+        )
+    except ValueError as exc:
+        _exit_with_error(str(exc))
+    options = kdeplan.PlannerOptions(
+        cache=cache_mode,
+        examples_mode=resolved_examples_mode,
+        glossary_mode=resolved_glossary_mode,
+        embedder=embedder,
+        sqlite_vector_path=sqlite_vector_path,
+    )
+    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
+    return config, project_id, options, path_casefold
+
+
 
 
 def _parse_lang_from_bytes(po_bytes: bytes) -> Optional[str]:
@@ -290,35 +329,16 @@ def plan(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = _load_project(project_root, "Plan")
-    config = project.config
-    project_id = str(project.project_data["project_id"])
-    cache_mode = cache or CacheMode.ON
-    cache_write_flag = cache_write or CacheMode.ON
-    if cache_write_flag == CacheMode.OFF:
-        _note_cache_write_noop("plan")
-    try:
-        resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
-            kdeplan.resolve_planner_inputs(
-                cache_mode=cache_mode,
-                examples=examples,
-                glossary=glossary,
-                config=config,
-                project_root=project_root,
-            )
-        )
-    except ValueError as exc:
-        _exit_with_error(str(exc))
-    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
+    config, project_id, options, path_casefold = get_planner_context(
+        project_root=project_root,
+        command_name="Plan",
+        cache=cache,
+        cache_write=cache_write,
+        examples=examples,
+        glossary=glossary,
+    )
     files_payload: list[dict] = []
     plan_payload: dict | None = None
-    options = kdeplan.PlannerOptions(
-        cache=cache_mode,
-        examples_mode=resolved_examples_mode,
-        glossary_mode=resolved_glossary_mode,
-        embedder=embedder,
-        sqlite_vector_path=sqlite_vector_path,
-    )
     with kdeplan.PlanBuilder(
         project_root=project_root,
         project_id=project_id,
@@ -420,26 +440,14 @@ def translate(
 ) -> None:
     ctx = click.get_current_context()
     project_root = _project_root(ctx)
-    project = _load_project(project_root, "Translate")
-    config = project.config
-    project_id = str(project.project_data["project_id"])
-    cache_mode = cache or CacheMode.ON
-    cache_write_flag = cache_write or CacheMode.ON
-    if cache_write_flag == CacheMode.OFF:
-        _note_cache_write_noop("translate")
-    try:
-        resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path = (
-            kdeplan.resolve_planner_inputs(
-                cache_mode=cache_mode,
-                examples=examples,
-                glossary=glossary,
-                config=config,
-                project_root=project_root,
-            )
-        )
-    except ValueError as exc:
-        _exit_with_error(str(exc))
-    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
+    config, project_id, options, path_casefold = get_planner_context(
+        project_root=project_root,
+        command_name="Translate",
+        cache=cache,
+        cache_write=cache_write,
+        examples=examples,
+        glossary=glossary,
+    )
 
     apply_defaults = _apply_defaults_from_config(
         config,
@@ -451,13 +459,6 @@ def translate(
     total_entries_applied = 0
     files_written: list[str] = []
     files_skipped: list[str] = []
-    options = kdeplan.PlannerOptions(
-        cache=cache_mode,
-        examples_mode=resolved_examples_mode,
-        glossary_mode=resolved_glossary_mode,
-        embedder=embedder,
-        sqlite_vector_path=sqlite_vector_path,
-    )
     with kdeplan.PlanBuilder(
         project_root=project_root,
         project_id=project_id,
