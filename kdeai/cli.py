@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, NoReturn
 import os
@@ -8,7 +9,6 @@ from datetime import datetime, timezone
 
 import portalocker
 import typer
-import click
 
 from kdeai import apply as kdeapply
 from kdeai.config import (
@@ -58,6 +58,17 @@ glossary_app = typer.Typer(no_args_is_help=True)
 app.add_typer(reference_app, name="reference")
 app.add_typer(examples_app, name="examples")
 app.add_typer(glossary_app, name="glossary")
+
+
+@dataclass
+class CLIState:
+    root: Path
+    project: Project | None = None
+    config: Config | None = None
+    project_id: str | None = None
+    path_casefold: bool = os.name == "nt"
+    run_lock_cm: object | None = None
+
 
 def _project_dir(project_root: Path) -> Path:
     return project_root / ".kdeai"
@@ -122,22 +133,14 @@ def _glossary_is_current(
         return False
 
 
-def _acquire_run_lock(project_root: Path, ctx: typer.Context) -> None:
+def _acquire_run_lock(project_root: Path, ctx: typer.Context, state: CLIState) -> None:
     lock_cm = locks.acquire_run_lock(project_root)
     try:
         lock_cm.__enter__()
     except portalocker.exceptions.LockException:
         _exit_with_error("Global run lock is held; another KDEAI process is running.")
-    ctx.obj = {"project_root": project_root, "run_lock_cm": lock_cm}
+    state.run_lock_cm = lock_cm
     ctx.call_on_close(lambda: lock_cm.__exit__(None, None, None))
-
-
-def _project_root(ctx: typer.Context) -> Path:
-    obj = ctx.obj or {}
-    root = obj.get("project_root")
-    if isinstance(root, Path):
-        return root
-    return Path.cwd()
 
 
 def _load_project(project_root: Path, command_name: str) -> Project:
@@ -148,18 +151,37 @@ def _load_project(project_root: Path, command_name: str) -> Project:
         _exit_with_error(f"{command_name} failed: {exc}")
 
 
+def _require_state(ctx: typer.Context) -> CLIState:
+    state = ctx.obj
+    if isinstance(state, CLIState):
+        return state
+    return CLIState(root=Path.cwd())
+
+
+def _ensure_project(state: CLIState, command_name: str) -> Project:
+    if state.project is not None:
+        return state.project
+    project = _load_project(state.root, command_name)
+    state.project = project
+    state.config = project.config
+    state.project_id = str(project.project_data["project_id"])
+    state.path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
+    return project
+
+
 def get_planner_context(
     *,
-    project_root: Path,
+    state: CLIState,
     command_name: str,
     cache: Optional[CacheModeLiteral],
     cache_write: Optional[CacheModeLiteral],
     examples: Optional[AssetModeLiteral],
     glossary: Optional[AssetModeLiteral],
 ) -> tuple[Config, str, kdeplan.PlannerOptions, bool]:
-    project = _load_project(project_root, command_name)
-    config = project.config
-    project_id = str(project.project_data["project_id"])
+    _ensure_project(state, command_name)
+    config = state.config
+    project_id = state.project_id
+    project_root = state.root
     cache_mode = cache or CacheMode.ON
     cache_write_flag = cache_write or CacheMode.ON
     if cache_write_flag == CacheMode.OFF:
@@ -183,7 +205,7 @@ def get_planner_context(
         embedder=embedder,
         sqlite_vector_path=sqlite_vector_path,
     )
-    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
+    path_casefold = bool(state.path_casefold)
     return config, project_id, options, path_casefold
 
 
@@ -301,12 +323,18 @@ def _optional_workspace_db(
 @app.callback()
 def main(ctx: typer.Context) -> None:
     project_root = Path.cwd()
-    _acquire_run_lock(project_root, ctx)
+    state = CLIState(root=project_root)
+    ctx.obj = state
+    _acquire_run_lock(project_root, ctx, state)
+    if ctx.invoked_subcommand in {None, "init"}:
+        return
+    _ensure_project(state, "CLI")
 
 
 @app.command()
-def init() -> None:
-    project_root = Path.cwd()
+def init(ctx: typer.Context) -> None:
+    state = _require_state(ctx)
+    project_root = state.root
     project_data = Project.ensure_project_data(project_root)
     typer.echo(f"Initialized project {project_data['project_id']} at {_project_dir(project_root)}.")
     config_path = project_root / ".kdeai" / "config.json"
@@ -316,6 +344,7 @@ def init() -> None:
 
 @app.command()
 def plan(
+    ctx: typer.Context,
     paths: Optional[list[Path]] = typer.Argument(None),
     lang: str = typer.Option(..., "--lang"),
     out: Optional[Path] = typer.Option(None, "--out"),
@@ -324,10 +353,10 @@ def plan(
     examples: Optional[AssetModeLiteral] = typer.Option(None, "--examples"),
     glossary: Optional[AssetModeLiteral] = typer.Option(None, "--glossary"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
+    state = _require_state(ctx)
+    project_root = state.root
     config, project_id, options, path_casefold = get_planner_context(
-        project_root=project_root,
+        state=state,
         command_name="Plan",
         cache=cache,
         cache_write=cache_write,
@@ -376,19 +405,20 @@ def plan(
 
 @app.command()
 def apply(
+    ctx: typer.Context,
     plan_path: Path = typer.Argument(...),
     apply_mode: Optional[ApplyModeLiteral] = typer.Option(None, "--apply-mode"),
     overwrite: Optional[OverwritePolicyLiteral] = typer.Option(None, "--overwrite"),
     post_index: PostIndexLiteral = typer.Option(PostIndex.OFF, "--post-index"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
+    state = _require_state(ctx)
+    project_root = state.root
     plan = kdeplan.load_plan(plan_path)
     post_index_flag = post_index == PostIndex.ON
-    project = _load_project(project_root, "Apply")
-    config = project.config
-    project_id = str(project.project_data["project_id"])
-    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
+    _ensure_project(state, "Apply")
+    config = state.config
+    project_id = state.project_id
+    path_casefold = bool(state.path_casefold)
 
     with _optional_workspace_db(
         project_root,
@@ -425,6 +455,7 @@ def apply(
 
 @app.command()
 def translate(
+    ctx: typer.Context,
     paths: Optional[list[Path]] = typer.Argument(None),
     lang: str = typer.Option(..., "--lang"),
     out: Optional[Path] = typer.Option(None, "--out"),
@@ -435,10 +466,10 @@ def translate(
     examples: Optional[AssetModeLiteral] = typer.Option(None, "--examples"),
     glossary: Optional[AssetModeLiteral] = typer.Option(None, "--glossary"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
+    state = _require_state(ctx)
+    project_root = state.root
     config, project_id, options, path_casefold = get_planner_context(
-        project_root=project_root,
+        state=state,
         command_name="Translate",
         cache=cache,
         cache_write=cache_write,
@@ -525,16 +556,16 @@ def translate(
 
 @app.command()
 def index(
+    ctx: typer.Context,
     paths: Optional[list[Path]] = typer.Argument(None),
     strict: bool = typer.Option(False, "--strict"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
-    project = _load_project(project_root, "Index")
-    config = project.config
-
-    project_id = str(project.project_data["project_id"])
-    path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
+    state = _require_state(ctx)
+    project_root = state.root
+    _ensure_project(state, "Index")
+    config = state.config
+    project_id = state.project_id
+    path_casefold = bool(state.path_casefold)
     with closing(
         _ensure_workspace_db(
             project_root,
@@ -577,19 +608,20 @@ def index(
 
 @reference_app.command("build")
 def reference_build(
+    ctx: typer.Context,
     paths: Optional[list[Path]] = typer.Argument(None),
     label: Optional[str] = typer.Option(None, "--label"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
-    project = _load_project(project_root, "Reference build")
-    config = project.config
-    project_id = str(project.project_data["project_id"])
+    state = _require_state(ctx)
+    project_root = state.root
+    _ensure_project(state, "Reference build")
+    config = state.config
+    project_id = state.project_id
     try:
         snapshot = kderef.build_reference_snapshot(
             project_root,
             project_id=project_id,
-            path_casefold=bool(project.project_data.get("path_casefold")),
+            path_casefold=bool(state.path_casefold),
             config=config,
             config_hash=config.config_hash,
             paths=paths,
@@ -613,15 +645,16 @@ def reference_build(
 
 @examples_app.command("build")
 def examples_build(
+    ctx: typer.Context,
     from_scope: ExamplesScope = typer.Option(..., "--from"),
     lang: str = typer.Option(..., "--lang"),
     skip_if_current: bool = typer.Option(False, "--skip-if-current"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
-    project = _load_project(project_root, "Examples build")
-    config = project.config
-    project_id = str(project.project_data["project_id"])
+    state = _require_state(ctx)
+    project_root = state.root
+    _ensure_project(state, "Examples build")
+    config = state.config
+    project_id = state.project_id
 
     if lang == "all":
         targets = config.languages.targets
@@ -757,13 +790,14 @@ def examples_build(
 
 @glossary_app.command("build")
 def glossary_build(
+    ctx: typer.Context,
     skip_if_current: bool = typer.Option(False, "--skip-if-current"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
-    project = _load_project(project_root, "Glossary build")
-    config = project.config
-    project_id = str(project.project_data["project_id"])
+    state = _require_state(ctx)
+    project_root = state.root
+    _ensure_project(state, "Glossary build")
+    config = state.config
+    project_id = state.project_id
     pointer_path = _cache_path(project_root, "glossary", "glossary.current.json")
 
     ref_pointer = po_utils.read_json(
@@ -840,10 +874,11 @@ def glossary_build(
 
 @app.command()
 def doctor(
+    ctx: typer.Context,
     repair_cache: bool = typer.Option(False, "--repair-cache"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
+    state = _require_state(ctx)
+    project_root = state.root
     report = kdedoctor.run_doctor(project_root, repair_cache=repair_cache)
     for note in report.notes:
         typer.echo(note)
@@ -857,13 +892,14 @@ def doctor(
 
 @app.command()
 def gc(
+    ctx: typer.Context,
     ttl_days: int = typer.Option(30, "--ttl-days"),
 ) -> None:
-    ctx = click.get_current_context()
-    project_root = _project_root(ctx)
-    project = _load_project(project_root, "GC")
-    config = project.config
-    project_id = str(project.project_data["project_id"])
+    state = _require_state(ctx)
+    project_root = state.root
+    _ensure_project(state, "GC")
+    config = state.config
+    project_id = state.project_id
     try:
         report = kdegc.gc_workspace_tm(
             project_root,

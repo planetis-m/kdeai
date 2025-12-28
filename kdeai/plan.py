@@ -16,11 +16,11 @@ from kdeai import db as kdedb
 from kdeai import examples as kdeexamples
 from kdeai import hash as kdehash
 from kdeai import locks
-from kdeai import po_utils
 from kdeai import po_model
 from kdeai import retrieve_examples
 from kdeai import retrieve_tm
 from kdeai import snapshot
+from kdeai import po_utils
 from kdeai.constants import (
     ApplyMode,
     AssetMode,
@@ -52,12 +52,13 @@ def build_plan_header(
     builder: "PlanBuilder",
     apply_defaults: dict,
 ) -> dict:
+    marker_flags = po_utils.ensure_ai_flag_in_markers(builder.marker_flags, builder.ai_flag)
     return {
         "format": PLAN_FORMAT_VERSION,
         "project_id": project_id,
         "config_hash": config.config_hash,
         "lang": lang,
-        "marker_flags": sorted(builder.marker_flags),
+        "marker_flags": sorted(marker_flags),
         "comment_prefixes": sorted(builder.comment_prefixes),
         "ai_flag": builder.ai_flag,
         "placeholder_patterns": list(config.apply.validation_patterns),

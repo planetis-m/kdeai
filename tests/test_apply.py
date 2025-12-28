@@ -252,39 +252,38 @@ class TestApplyAdditionalCases(unittest.TestCase):
 
     def test_validate_plan_header_requires_project_id(self):
         config = build_config()
-        marker_flags, comment_prefixes, _, _, ai_flag = apply._marker_settings_from_config(config)
-        placeholder_patterns = list(config.apply.validation_patterns)
+        compiled_placeholder_patterns = [
+            re.compile(pattern) for pattern in config.apply.validation_patterns
+        ]
+        ctx = apply.ApplyContext.from_config(
+            config,
+            lang="de",
+            mode="strict",
+            overwrite_policy="conservative",
+            placeholder_patterns=compiled_placeholder_patterns,
+        )
 
         missing = apply._validate_plan_header(
             {"config_hash": config.config_hash},
             project_id="proj",
+            ctx=ctx,
             config=config,
-            marker_flags=marker_flags,
-            comment_prefixes=comment_prefixes,
-            ai_flag=ai_flag,
-            placeholder_patterns=placeholder_patterns,
         )
         self.assertEqual(missing, ["plan project_id missing"])
 
         mismatched = apply._validate_plan_header(
             {"project_id": "other", "config_hash": config.config_hash},
             project_id="proj",
+            ctx=ctx,
             config=config,
-            marker_flags=marker_flags,
-            comment_prefixes=comment_prefixes,
-            ai_flag=ai_flag,
-            placeholder_patterns=placeholder_patterns,
         )
         self.assertEqual(mismatched, ["plan project_id does not match current project"])
 
         ok = apply._validate_plan_header(
             {"project_id": "proj", "config_hash": config.config_hash},
             project_id="proj",
+            ctx=ctx,
             config=config,
-            marker_flags=marker_flags,
-            comment_prefixes=comment_prefixes,
-            ai_flag=ai_flag,
-            placeholder_patterns=placeholder_patterns,
         )
         self.assertEqual(ok, [])
 
