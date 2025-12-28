@@ -488,12 +488,14 @@ def _phase1_validate_content(
         msgstr = translation.get("msgstr", "")
         msgstr_plural = translation.get("msgstr_plural", {})
         validation_errors = validate.validate_entry(
-            msgid=entry.msgid,
-            msgid_plural=entry.msgid_plural or "",
-            msgstr=msgstr or "",
-            msgstr_plural=kdestate.canonical_plural_map(msgstr_plural),
-            plural_forms=plural_forms,
-            placeholder_patterns=ctx.placeholder_patterns,
+            validate.ValidationRequest(
+                msgid=entry.msgid,
+                msgid_plural=entry.msgid_plural or "",
+                msgstr=msgstr or "",
+                msgstr_plural=kdestate.canonical_plural_map(msgstr_plural),
+                plural_forms=plural_forms,
+                placeholder_patterns=ctx.placeholder_patterns,
+            )
         )
         if validation_errors:
             file_errors.extend(validation_errors)

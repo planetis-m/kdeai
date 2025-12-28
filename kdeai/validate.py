@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
 from typing import Iterable, Mapping, Pattern
 
 from kdeai.po_utils import parse_nplurals
@@ -11,39 +12,31 @@ PLURAL_CONSISTENCY_ERROR = "plural key consistency"
 TAG_INTEGRITY_ERROR = "tag/placeholder integrity"
 
 
-def validate_non_empty(
-    *,
-    msgid: str,
-    msgid_plural: str,
-    msgstr: str,
-    msgstr_plural: Mapping[str, str],
-    plural_forms: str | None,
-    placeholder_patterns: Iterable[str | Pattern[str]],
-) -> str | None:
-    _ = msgid, plural_forms, placeholder_patterns
-    if msgid_plural:
-        if any(str(value).strip() for value in msgstr_plural.values()):
+@dataclass(frozen=True)
+class ValidationRequest:
+    msgid: str
+    msgid_plural: str
+    msgstr: str
+    msgstr_plural: Mapping[str, str]
+    plural_forms: str | None
+    placeholder_patterns: Iterable[str | Pattern[str]]
+
+
+def validate_non_empty(request: ValidationRequest) -> str | None:
+    if request.msgid_plural:
+        if any(str(value).strip() for value in request.msgstr_plural.values()):
             return None
         return NON_EMPTY_ERROR
-    if msgstr.strip() == "":
+    if request.msgstr.strip() == "":
         return NON_EMPTY_ERROR
     return None
 
 
-def validate_plural_consistency(
-    *,
-    msgid: str,
-    msgid_plural: str,
-    msgstr: str,
-    msgstr_plural: Mapping[str, str],
-    plural_forms: str | None,
-    placeholder_patterns: Iterable[str | Pattern[str]],
-) -> str | None:
-    _ = msgid, msgstr, placeholder_patterns
-    if not msgid_plural:
+def validate_plural_consistency(request: ValidationRequest) -> str | None:
+    if not request.msgid_plural:
         return None
-    nplurals = parse_nplurals(plural_forms)
-    keys = list(msgstr_plural.keys())
+    nplurals = parse_nplurals(request.plural_forms)
+    keys = list(request.msgstr_plural.keys())
     if any(not str(key).isdigit() for key in keys):
         return PLURAL_CONSISTENCY_ERROR
     if nplurals is None:
@@ -65,33 +58,27 @@ def _plural_key_sorter(value: str) -> tuple[int, str]:
     return (1, text)
 
 
-def validate_tag_integrity(
-    *,
-    msgid: str,
-    msgid_plural: str,
-    msgstr: str,
-    msgstr_plural: Mapping[str, str],
-    plural_forms: str | None,
-    placeholder_patterns: Iterable[str | Pattern[str]],
-) -> str | None:
-    _ = plural_forms
-    if not placeholder_patterns:
+def validate_tag_integrity(request: ValidationRequest) -> str | None:
+    if not request.placeholder_patterns:
         return None
-    plural = bool(msgid_plural)
-    for raw_pattern in placeholder_patterns:
+    plural = bool(request.msgid_plural)
+    for raw_pattern in request.placeholder_patterns:
         if not isinstance(raw_pattern, re.Pattern):
             raw_pattern = re.compile(str(raw_pattern))
         compiled = raw_pattern
         if plural:
-            for key in sorted(msgstr_plural.keys(), key=_plural_key_sorter):
-                source_text = msgid if str(key) == "0" else msgid_plural
+            for key in sorted(request.msgstr_plural.keys(), key=_plural_key_sorter):
+                source_text = request.msgid if str(key) == "0" else request.msgid_plural
                 source_tokens = _extract_tokens(source_text, compiled)
-                target_tokens = _extract_tokens(str(msgstr_plural.get(key, "")), compiled)
+                target_tokens = _extract_tokens(
+                    str(request.msgstr_plural.get(key, "")),
+                    compiled,
+                )
                 if Counter(target_tokens) != Counter(source_tokens):
                     return TAG_INTEGRITY_ERROR
         else:
-            source_tokens = _extract_tokens(msgid, compiled)
-            target_tokens = _extract_tokens(msgstr, compiled)
+            source_tokens = _extract_tokens(request.msgid, compiled)
+            target_tokens = _extract_tokens(request.msgstr, compiled)
             if Counter(target_tokens) != Counter(source_tokens):
                 return TAG_INTEGRITY_ERROR
     return None
@@ -104,25 +91,10 @@ VALIDATORS = [
 ]
 
 
-def validate_entry(
-    *,
-    msgid: str,
-    msgid_plural: str,
-    msgstr: str,
-    msgstr_plural: Mapping[str, str],
-    plural_forms: str | None,
-    placeholder_patterns: Iterable[str | Pattern[str]],
-) -> list[str]:
+def validate_entry(request: ValidationRequest) -> list[str]:
     errors: list[str] = []
     for validator in VALIDATORS:
-        error = validator(
-            msgid=msgid,
-            msgid_plural=msgid_plural,
-            msgstr=msgstr,
-            msgstr_plural=msgstr_plural,
-            plural_forms=plural_forms,
-            placeholder_patterns=placeholder_patterns,
-        )
+        error = validator(request)
         if error:
             errors.append(error)
     return errors
