@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Pattern
 
-from kdeai.po_utils import parse_nplurals
+from kdeai import po_utils
 
 NON_EMPTY_ERROR = "non-empty translation"
 PLURAL_CONSISTENCY_ERROR = "plural key consistency"
@@ -23,19 +23,19 @@ class ValidationRequest:
 
 
 def validate_non_empty(request: ValidationRequest) -> str | None:
-    if request.msgid_plural:
-        if any(str(value).strip() for value in request.msgstr_plural.values()):
-            return None
-        return NON_EMPTY_ERROR
-    if request.msgstr.strip() == "":
-        return NON_EMPTY_ERROR
-    return None
+    if po_utils.is_translation_non_empty(
+        request.msgstr,
+        request.msgstr_plural,
+        bool(request.msgid_plural),
+    ):
+        return None
+    return NON_EMPTY_ERROR
 
 
 def validate_plural_consistency(request: ValidationRequest) -> str | None:
     if not request.msgid_plural:
         return None
-    nplurals = parse_nplurals(request.plural_forms)
+    nplurals = po_utils.parse_nplurals(request.plural_forms)
     keys = list(request.msgstr_plural.keys())
     if any(not str(key).isdigit() for key in keys):
         return PLURAL_CONSISTENCY_ERROR

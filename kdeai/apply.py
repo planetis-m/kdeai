@@ -535,11 +535,7 @@ class FileApplyProcessor:
     ) -> list[tuple[Mapping[str, object], polib.POEntry, str]]:
         applicable: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
         for entry_item, entry, action in to_apply:
-            current_non_empty = po_utils.is_translation_non_empty(
-                entry.msgstr or "",
-                entry.msgstr_plural or {},
-                bool(entry.msgid_plural),
-            )
+            current_non_empty = po_utils.has_non_empty_translation(entry)
             reviewed = _is_reviewed(entry, self.ctx.review_prefix)
             if _can_overwrite(current_non_empty, reviewed, self.ctx.overwrite_policy):
                 applicable.append((entry_item, entry, action))
