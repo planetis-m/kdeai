@@ -90,6 +90,22 @@ class ApplyFileResult:
     applied_entries: list[polib.POEntry]
 
 
+@dataclass(frozen=True)
+class PlanHeaderValues:
+    project_id: str
+    config_hash: str
+    marker_flags: list[str] | None
+    comment_prefixes: list[str] | None
+    ai_flag: str | None
+    placeholder_patterns: list[str] | None
+
+
+@dataclass(frozen=True)
+class Phase1Outcome:
+    result: ApplyFileResult | None
+    applicable: list[tuple[Mapping[str, object], polib.POEntry, str]]
+
+
 def _normalize_str_list(
     value: object,
     field_label: str,
@@ -99,6 +115,49 @@ def _normalize_str_list(
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"{field_label} must be a list")
     return [str(item) for item in value]
+
+
+def _parse_plan_header(plan: Mapping[str, object]) -> tuple[PlanHeaderValues, list[str]]:
+    errors: list[str] = []
+    project_id = str(plan.get("project_id", "")).strip()
+    config_hash = str(plan.get("config_hash", ""))
+
+    try:
+        marker_flags = _normalize_str_list(plan.get("marker_flags"), "plan marker_flags")
+    except ValueError as exc:
+        errors.append(str(exc))
+        marker_flags = None
+
+    try:
+        comment_prefixes = _normalize_str_list(
+            plan.get("comment_prefixes"),
+            "plan comment_prefixes",
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        comment_prefixes = None
+
+    ai_flag = plan.get("ai_flag")
+    ai_flag_text = str(ai_flag) if ai_flag is not None else None
+
+    try:
+        placeholder_patterns = _normalize_str_list(
+            plan.get("placeholder_patterns"),
+            "plan placeholder_patterns",
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        placeholder_patterns = None
+
+    header = PlanHeaderValues(
+        project_id=project_id,
+        config_hash=config_hash,
+        marker_flags=marker_flags,
+        comment_prefixes=comment_prefixes,
+        ai_flag=ai_flag_text,
+        placeholder_patterns=placeholder_patterns,
+    )
+    return header, errors
 
 
 def _validate_plan_header(
@@ -111,53 +170,29 @@ def _validate_plan_header(
     ai_flag: str,
     placeholder_patterns: list[str],
 ) -> list[str]:
-    errors: list[str] = []
-    plan_project_id = str(plan.get("project_id", "")).strip()
-    if not plan_project_id:
+    header, errors = _parse_plan_header(plan)
+    if not header.project_id:
         errors.append("plan project_id missing")
         return errors
-    if plan_project_id != project_id:
+    if header.project_id != project_id:
         errors.append("plan project_id does not match current project")
         return errors
-    plan_config_hash = str(plan.get("config_hash", ""))
-    if not plan_config_hash or plan_config_hash != config.config_hash:
+    if not header.config_hash or header.config_hash != config.config_hash:
         errors.append("plan config_hash does not match current config")
         return errors
 
-    try:
-        plan_marker_flags = _normalize_str_list(plan.get("marker_flags"), "plan marker_flags")
-    except ValueError as exc:
-        errors.append(str(exc))
-        plan_marker_flags = None
-    if plan_marker_flags is not None and sorted(plan_marker_flags) != sorted(marker_flags):
+    if header.marker_flags is not None and sorted(header.marker_flags) != sorted(marker_flags):
         errors.append("plan marker_flags do not match config")
 
-    try:
-        plan_comment_prefixes = _normalize_str_list(
-            plan.get("comment_prefixes"),
-            "plan comment_prefixes",
-        )
-    except ValueError as exc:
-        errors.append(str(exc))
-        plan_comment_prefixes = None
-    if plan_comment_prefixes is not None and sorted(plan_comment_prefixes) != sorted(
+    if header.comment_prefixes is not None and sorted(header.comment_prefixes) != sorted(
         comment_prefixes
     ):
         errors.append("plan comment_prefixes do not match config")
 
-    plan_ai_flag = plan.get("ai_flag")
-    if plan_ai_flag is not None and str(plan_ai_flag) != ai_flag:
+    if header.ai_flag is not None and header.ai_flag != ai_flag:
         errors.append("plan ai_flag does not match config")
 
-    try:
-        plan_placeholder_patterns = _normalize_str_list(
-            plan.get("placeholder_patterns"),
-            "plan placeholder_patterns",
-        )
-    except ValueError as exc:
-        errors.append(str(exc))
-        plan_placeholder_patterns = None
-    if plan_placeholder_patterns is not None and plan_placeholder_patterns != placeholder_patterns:
+    if header.placeholder_patterns is not None and header.placeholder_patterns != placeholder_patterns:
         errors.append("plan placeholder_patterns do not match config")
 
     return errors
@@ -365,6 +400,188 @@ def _validate_plan_entry(entry_item: object) -> list[str]:
     return errors
 
 
+class FileApplyProcessor:
+    def __init__(
+        self,
+        file_path: str,
+        *,
+        ctx: ApplyContext,
+        po_file: polib.POFile,
+        marker_flags: list[str],
+        comment_prefixes: list[str],
+        file_warnings: list[str],
+    ) -> None:
+        self.file_path = file_path
+        self.ctx = ctx
+        self.po_file = po_file
+        self.marker_flags = marker_flags
+        self.comment_prefixes = comment_prefixes
+        self.file_warnings = file_warnings
+
+    def validate_and_filter(self, plan_items: list) -> Phase1Outcome:
+        entry_map, duplicate_result = _build_entry_map(self.file_path, self.po_file)
+        if duplicate_result is not None:
+            return Phase1Outcome(duplicate_result, [])
+
+        integrity_result, to_apply = self._integrity_check(plan_items, entry_map)
+        if integrity_result is not None:
+            return Phase1Outcome(integrity_result, [])
+
+        applicable = self._policy_filter(to_apply)
+
+        content_result = self._validate_content(applicable)
+        if content_result is not None:
+            return Phase1Outcome(content_result, [])
+
+        return Phase1Outcome(None, applicable)
+
+    def _integrity_check(
+        self,
+        plan_items: list,
+        entry_map: Mapping[tuple[str, str, str], polib.POEntry],
+    ) -> tuple[ApplyFileResult | None, list[tuple[Mapping[str, object], polib.POEntry, str]]]:
+        file_errors: list[str] = []
+        to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
+        mismatch = False
+        mismatch_reason: str | None = None
+        for index, entry_item in enumerate(plan_items):
+            entry_errors = _validate_plan_entry(entry_item)
+            if entry_errors:
+                for error in entry_errors:
+                    file_errors.append(f"{self.file_path}: invalid plan entry {index}: {error}")
+                return ApplyFileResult(
+                    self.file_path,
+                    False,
+                    True,
+                    0,
+                    file_errors,
+                    self.file_warnings,
+                    [],
+                ), []
+            action = str(entry_item.get("action", ""))
+            if action not in {PlanAction.COPY_TM, PlanAction.LLM, PlanAction.SKIP}:
+                if action:
+                    file_errors.append(f"{self.file_path}: unsupported action: {action}")
+                else:
+                    file_errors.append(f"{self.file_path}: unsupported action: missing")
+                return ApplyFileResult(
+                    self.file_path,
+                    False,
+                    True,
+                    0,
+                    file_errors,
+                    self.file_warnings,
+                    [],
+                ), []
+            if action == PlanAction.SKIP:
+                continue
+            key = (
+                str(entry_item.get("msgctxt", "")),
+                str(entry_item.get("msgid", "")),
+                str(entry_item.get("msgid_plural", "")),
+            )
+            entry = entry_map.get(key)
+            if entry is None:
+                if self.ctx.mode == "strict":
+                    mismatch = True
+                    mismatch_reason = "missing entry"
+                    break
+                continue
+            current_hash = kdestate.entry_state_hash(
+                entry,
+                lang=self.ctx.lang,
+                marker_flags=self.marker_flags,
+                comment_prefixes=self.comment_prefixes,
+            )
+            base_state_hash = str(entry_item.get("base_state_hash", ""))
+            if current_hash != base_state_hash:
+                if self.ctx.mode == "strict":
+                    mismatch = True
+                    mismatch_reason = "entry state mismatch"
+                    break
+                continue
+            to_apply.append((entry_item, entry, action))
+
+        if mismatch:
+            if self.ctx.mode == "strict":
+                reason = mismatch_reason or "entry state mismatch"
+                self.file_warnings.append(f"{self.file_path}: skipped (strict): {reason}")
+            return ApplyFileResult(
+                self.file_path,
+                False,
+                True,
+                0,
+                [],
+                self.file_warnings,
+                [],
+            ), []
+
+        if file_errors:
+            return ApplyFileResult(
+                self.file_path,
+                False,
+                True,
+                0,
+                file_errors,
+                self.file_warnings,
+                [],
+            ), []
+
+        return None, to_apply
+
+    def _policy_filter(
+        self,
+        to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]],
+    ) -> list[tuple[Mapping[str, object], polib.POEntry, str]]:
+        applicable: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
+        for entry_item, entry, action in to_apply:
+            current_non_empty = po_utils.is_translation_non_empty(
+                entry.msgstr or "",
+                entry.msgstr_plural or {},
+                bool(entry.msgid_plural),
+            )
+            reviewed = _is_reviewed(entry, self.ctx.review_prefix)
+            if _can_overwrite(current_non_empty, reviewed, self.ctx.overwrite_policy):
+                applicable.append((entry_item, entry, action))
+        return applicable
+
+    def _validate_content(
+        self,
+        applicable: list[tuple[Mapping[str, object], polib.POEntry, str]],
+    ) -> ApplyFileResult | None:
+        file_errors: list[str] = []
+        plural_forms = self.po_file.metadata.get("Plural-Forms")
+        for entry_item, entry, _action in applicable:
+            translation = entry_item.get("translation")
+            msgstr = translation.get("msgstr", "")
+            msgstr_plural = translation.get("msgstr_plural", {})
+            validation_errors = validate.validate_entry(
+                validate.ValidationRequest(
+                    msgid=entry.msgid,
+                    msgid_plural=entry.msgid_plural or "",
+                    msgstr=msgstr or "",
+                    msgstr_plural=kdestate.canonical_plural_map(msgstr_plural),
+                    plural_forms=plural_forms,
+                    placeholder_patterns=self.ctx.placeholder_patterns,
+                )
+            )
+            if validation_errors:
+                file_errors.extend(validation_errors)
+                break
+
+        if file_errors:
+            return ApplyFileResult(
+                self.file_path,
+                False,
+                True,
+                0,
+                file_errors,
+                self.file_warnings,
+                [],
+            )
+        return None
+
+
 def _build_entry_map(
     file_path: str,
     po_file: polib.POFile,
@@ -386,165 +603,6 @@ def _build_entry_map(
         ]
         return {}, ApplyFileResult(file_path, False, True, 0, file_errors, [], [])
     return entry_map, None
-
-
-def _phase1_integrity_check(
-    file_path: str,
-    plan_items: list,
-    *,
-    ctx: ApplyContext,
-    entry_map: Mapping[tuple[str, str, str], polib.POEntry],
-    marker_flags: list[str],
-    comment_prefixes: list[str],
-    file_warnings: list[str],
-) -> tuple[ApplyFileResult | None, list[tuple[Mapping[str, object], polib.POEntry, str]]]:
-    file_errors: list[str] = []
-    to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
-    mismatch = False
-    mismatch_reason: str | None = None
-    for index, entry_item in enumerate(plan_items):
-        entry_errors = _validate_plan_entry(entry_item)
-        if entry_errors:
-            for error in entry_errors:
-                file_errors.append(f"{file_path}: invalid plan entry {index}: {error}")
-            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
-        action = str(entry_item.get("action", ""))
-        if action not in {PlanAction.COPY_TM, PlanAction.LLM, PlanAction.SKIP}:
-            if action:
-                file_errors.append(f"{file_path}: unsupported action: {action}")
-            else:
-                file_errors.append(f"{file_path}: unsupported action: missing")
-            return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
-        if action == PlanAction.SKIP:
-            continue
-        key = (
-            str(entry_item.get("msgctxt", "")),
-            str(entry_item.get("msgid", "")),
-            str(entry_item.get("msgid_plural", "")),
-        )
-        entry = entry_map.get(key)
-        if entry is None:
-            if ctx.mode == "strict":
-                mismatch = True
-                mismatch_reason = "missing entry"
-                break
-            continue
-        current_hash = kdestate.entry_state_hash(
-            entry,
-            lang=ctx.lang,
-            marker_flags=marker_flags,
-            comment_prefixes=comment_prefixes,
-        )
-        base_state_hash = str(entry_item.get("base_state_hash", ""))
-        if current_hash != base_state_hash:
-            if ctx.mode == "strict":
-                mismatch = True
-                mismatch_reason = "entry state mismatch"
-                break
-            continue
-        to_apply.append((entry_item, entry, action))
-
-    if mismatch:
-        if ctx.mode == "strict":
-            reason = mismatch_reason or "entry state mismatch"
-            file_warnings.append(f"{file_path}: skipped (strict): {reason}")
-        return ApplyFileResult(file_path, False, True, 0, [], file_warnings, []), []
-
-    if file_errors:
-        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
-
-    return None, to_apply
-
-
-def _phase1_policy_filter(
-    to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]],
-    *,
-    ctx: ApplyContext,
-) -> list[tuple[Mapping[str, object], polib.POEntry, str]]:
-    applicable: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
-    for entry_item, entry, action in to_apply:
-        current_non_empty = po_utils.is_translation_non_empty(
-            entry.msgstr or "",
-            entry.msgstr_plural or {},
-            bool(entry.msgid_plural),
-        )
-        reviewed = _is_reviewed(entry, ctx.review_prefix)
-        if _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
-            applicable.append((entry_item, entry, action))
-    return applicable
-
-
-def _phase1_validate_content(
-    file_path: str,
-    applicable: list[tuple[Mapping[str, object], polib.POEntry, str]],
-    *,
-    ctx: ApplyContext,
-    plural_forms: str | None,
-    file_warnings: list[str],
-) -> ApplyFileResult | None:
-    file_errors: list[str] = []
-    for entry_item, entry, _action in applicable:
-        translation = entry_item.get("translation")
-        msgstr = translation.get("msgstr", "")
-        msgstr_plural = translation.get("msgstr_plural", {})
-        validation_errors = validate.validate_entry(
-            validate.ValidationRequest(
-                msgid=entry.msgid,
-                msgid_plural=entry.msgid_plural or "",
-                msgstr=msgstr or "",
-                msgstr_plural=kdestate.canonical_plural_map(msgstr_plural),
-                plural_forms=plural_forms,
-                placeholder_patterns=ctx.placeholder_patterns,
-            )
-        )
-        if validation_errors:
-            file_errors.extend(validation_errors)
-            break
-
-    if file_errors:
-        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
-    return None
-
-
-def _phase1_validate_and_filter(
-    file_path: str,
-    plan_items: list,
-    *,
-    ctx: ApplyContext,
-    po_file: polib.POFile,
-    marker_flags: list[str],
-    comment_prefixes: list[str],
-    file_warnings: list[str],
-) -> tuple[ApplyFileResult | None, list[tuple[Mapping[str, object], polib.POEntry, str]]]:
-    entry_map, duplicate_result = _build_entry_map(file_path, po_file)
-    if duplicate_result is not None:
-        return duplicate_result, []
-
-    integrity_result, to_apply = _phase1_integrity_check(
-        file_path,
-        plan_items,
-        ctx=ctx,
-        entry_map=entry_map,
-        marker_flags=marker_flags,
-        comment_prefixes=comment_prefixes,
-        file_warnings=file_warnings,
-    )
-    if integrity_result is not None:
-        return integrity_result, []
-
-    applicable = _phase1_policy_filter(to_apply, ctx=ctx)
-
-    content_result = _phase1_validate_content(
-        file_path,
-        applicable,
-        ctx=ctx,
-        plural_forms=po_file.metadata.get("Plural-Forms"),
-        file_warnings=file_warnings,
-    )
-    if content_result is not None:
-        return content_result, []
-
-    return None, applicable
 
 
 def _phase2_apply_mutations(
@@ -643,17 +701,18 @@ def apply_plan_to_file(
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, [])
 
     po_file = po_model.load_po_from_bytes(phase_a.bytes)
-    phase1_result, applicable = _phase1_validate_and_filter(
+    processor = FileApplyProcessor(
         file_path,
-        plan_items,
         ctx=ctx,
         po_file=po_file,
         marker_flags=marker_flags,
         comment_prefixes=comment_prefixes,
         file_warnings=file_warnings,
     )
-    if phase1_result is not None:
-        return phase1_result
+    phase1 = processor.validate_and_filter(plan_items)
+    if phase1.result is not None:
+        return phase1.result
+    applicable = phase1.applicable
 
     applied_entries, applied_in_file = _phase2_apply_mutations(
         applicable,
