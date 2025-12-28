@@ -3,11 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Optional, Sequence
+from typing import Optional
 import json
 import sqlite3
-
-import polib
 
 from kdeai import apply as kdeapply
 from kdeai.config import Config
@@ -49,36 +47,10 @@ def _selection_settings(config: Config) -> tuple[list[str], bool]:
     return list(selection.review_status_order), bool(selection.prefer_human)
 
 
-def _selection_key(
-    row: Sequence[object],
-    review_rank: Mapping[str, int],
-    prefer_human: bool,
-    default_rank: int,
-) -> tuple:
-    review_status = str(row[6])
-    rank = review_rank.get(review_status, default_rank)
-    is_ai_generated = int(row[7])
-    ai_rank = is_ai_generated if prefer_human else 0
-    translation_hash = str(row[8])
-    file_path = str(row[2])
-    file_sha256 = str(row[3])
-    return (rank, ai_rank, translation_hash, file_path, file_sha256)
-
-
 def _normalize_relpath(project_root: Path, path: Path) -> str:
     resolved = path.resolve()
     relpath = resolved.relative_to(project_root.resolve())
     return relpath.as_posix()
-
-
-def _lang_from_po(po_file: polib.POFile, config: Config) -> str:
-    language = po_file.metadata.get("Language") if po_file else None
-    if language:
-        return str(language).strip()
-    targets = config.languages.targets
-    if len(targets) == 1:
-        return str(targets[0])
-    return ""
 
 
 def _next_snapshot_id(reference_dir: Path) -> int:
@@ -149,7 +121,7 @@ def build_reference_snapshot(
         )
         locked = snapshot.locked_read_file(path, lock_path, relpath=relpath)
         po_file = po_model.load_po_from_bytes(locked.bytes)
-        lang = _lang_from_po(po_file, config)
+        lang = po_utils.get_po_language(po_file, config)
         if not lang:
             raise ValueError(f"unable to infer language for {relpath}")
 
@@ -191,47 +163,34 @@ def build_reference_snapshot(
         if translations_payload:
             conn.executemany(translations_sql, translations_payload)
 
-    rows = conn.execute(
-        "SELECT source_key, lang, file_path, file_sha256, msgstr, msgstr_plural, "
-        "review_status, is_ai_generated, translation_hash FROM translations"
-    ).fetchall()
-
-    grouped: dict[tuple[str, str], list[Sequence[object]]] = {}
-    for row in rows:
-        grouped.setdefault((str(row[0]), str(row[1])), []).append(row)
-
     conn.execute("DELETE FROM best_translations")
-    review_rank = {status: idx for idx, status in enumerate(review_status_order)}
     default_rank = len(review_status_order)
-    best_payload: list[tuple[str, str, str, str, str, str, str, int, str]] = []
-    for key in sorted(grouped.keys()):
-        candidates = grouped[key]
-        best = min(
-            candidates,
-            key=lambda row: _selection_key(row, review_rank, prefer_human, default_rank),
-        )
-        best_payload.append(
-            (
-                str(best[0]),
-                str(best[1]),
-                str(best[2]),
-                str(best[3]),
-                str(best[4]),
-                str(best[5]),
-                str(best[6]),
-                int(best[7]),
-                str(best[8]),
-            )
-        )
-
-    if best_payload:
-        conn.executemany(
-            "INSERT INTO best_translations ("
-            "source_key, lang, file_path, file_sha256, msgstr, msgstr_plural, "
-            "review_status, is_ai_generated, translation_hash"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            best_payload,
-        )
+    case_clauses = []
+    for idx, status in enumerate(review_status_order):
+        escaped_status = str(status).replace("'", "''")
+        case_clauses.append(f"WHEN '{escaped_status}' THEN {idx}")
+    review_rank_case = (
+        "CASE review_status "
+        + " ".join(case_clauses)
+        + f" ELSE {default_rank} END"
+    )
+    ai_order = "is_ai_generated" if prefer_human else "0"
+    conn.execute(
+        "INSERT INTO best_translations ("
+        "source_key, lang, file_path, file_sha256, msgstr, msgstr_plural, "
+        "review_status, is_ai_generated, translation_hash"
+        ") "
+        "SELECT source_key, lang, file_path, file_sha256, msgstr, msgstr_plural, "
+        "review_status, is_ai_generated, translation_hash "
+        "FROM ("
+        "SELECT source_key, lang, file_path, file_sha256, msgstr, msgstr_plural, "
+        "review_status, is_ai_generated, translation_hash, "
+        "ROW_NUMBER() OVER (PARTITION BY source_key, lang ORDER BY "
+        f"{review_rank_case}, {ai_order}, translation_hash, file_path, file_sha256"
+        ") AS rn "
+        "FROM translations"
+        ") WHERE rn = 1"
+    )
 
     meta_payload = {
         "schema_version": REFERENCE_TM_SCHEMA_VERSION,

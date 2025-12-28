@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Iterable, Mapping
 import hashlib
 import os
@@ -210,38 +210,25 @@ def _apply_comments(
     ensure_lines: Iterable[str],
     append: str,
 ) -> None:
-    original = entry.tcomment or ""
-    normalized = original.replace("\r\n", "\n")
+    normalized = (entry.tcomment or "").replace("\r\n", "\n")
     had_trailing_newline = normalized.endswith("\n")
-    if had_trailing_newline:
-        normalized = normalized[:-1]
-    lines = [] if normalized == "" else normalized.split("\n")
-
-    filtered: list[str] = []
+    lines = normalized.splitlines()
     ensure_set = {str(line) for line in ensure_lines}
-    for line in lines:
-        if any(line.startswith(prefix) for prefix in remove_prefixes):
-            continue
-        if line in ensure_set:
-            continue
-        filtered.append(line)
-
-    seen_ensure: set[str] = set()
-    for line in ensure_lines:
-        line_text = str(line)
-        if line_text in seen_ensure:
-            continue
-        filtered.append(line_text)
-        seen_ensure.add(line_text)
-
+    filtered = [
+        line
+        for line in lines
+        if not any(line.startswith(prefix) for prefix in remove_prefixes) and line not in ensure_set
+    ]
+    ensured = list(dict.fromkeys(str(line) for line in ensure_lines))
+    final_lines = filtered + ensured
     if append:
-        append_text = str(append)
-        append_lines = append_text.split("\n")
-        filtered.extend(append_lines)
+        append_text = str(append).replace("\r\n", "\n")
+        final_lines.extend(append_text.splitlines())
+        if append_text.endswith("\n"):
+            final_lines.append("")
     elif had_trailing_newline:
-        filtered.append("")
-
-    entry.tcomment = "\n".join(filtered)
+        final_lines.append("")
+    entry.tcomment = "\n".join(final_lines)
 
 
 def _set_translation(
@@ -378,16 +365,10 @@ def _validate_plan_entry(entry_item: object) -> list[str]:
     return errors
 
 
-def _phase1_validate_and_filter(
+def _build_entry_map(
     file_path: str,
-    plan_items: list,
-    *,
-    ctx: ApplyContext,
     po_file: polib.POFile,
-    marker_flags: list[str],
-    comment_prefixes: list[str],
-    file_warnings: list[str],
-) -> tuple[ApplyFileResult | None, list[tuple[Mapping[str, object], polib.POEntry, str]]]:
+) -> tuple[dict[tuple[str, str, str], polib.POEntry], ApplyFileResult | None]:
     entry_map: dict[tuple[str, str, str], polib.POEntry] = {}
     duplicate_keys: list[tuple[str, str, str]] = []
     for entry in po_file:
@@ -403,8 +384,20 @@ def _phase1_validate_and_filter(
         file_errors = [
             f"{file_path}: duplicate entry key: msgctxt={key[0]!r} msgid={key[1]!r} msgid_plural={key[2]!r}"
         ]
-        return ApplyFileResult(file_path, False, True, 0, file_errors, [], []), []
+        return {}, ApplyFileResult(file_path, False, True, 0, file_errors, [], [])
+    return entry_map, None
 
+
+def _phase1_integrity_check(
+    file_path: str,
+    plan_items: list,
+    *,
+    ctx: ApplyContext,
+    entry_map: Mapping[tuple[str, str, str], polib.POEntry],
+    marker_flags: list[str],
+    comment_prefixes: list[str],
+    file_warnings: list[str],
+) -> tuple[ApplyFileResult | None, list[tuple[Mapping[str, object], polib.POEntry, str]]]:
     file_errors: list[str] = []
     to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     mismatch = False
@@ -457,7 +450,17 @@ def _phase1_validate_and_filter(
             file_warnings.append(f"{file_path}: skipped (strict): {reason}")
         return ApplyFileResult(file_path, False, True, 0, [], file_warnings, []), []
 
-    # Filter to entries that pass overwrite policy.
+    if file_errors:
+        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
+
+    return None, to_apply
+
+
+def _phase1_policy_filter(
+    to_apply: list[tuple[Mapping[str, object], polib.POEntry, str]],
+    *,
+    ctx: ApplyContext,
+) -> list[tuple[Mapping[str, object], polib.POEntry, str]]:
     applicable: list[tuple[Mapping[str, object], polib.POEntry, str]] = []
     for entry_item, entry, action in to_apply:
         current_non_empty = po_utils.is_translation_non_empty(
@@ -468,9 +471,19 @@ def _phase1_validate_and_filter(
         reviewed = _is_reviewed(entry, ctx.review_prefix)
         if _can_overwrite(current_non_empty, reviewed, ctx.overwrite_policy):
             applicable.append((entry_item, entry, action))
+    return applicable
 
-    plural_forms = po_file.metadata.get("Plural-Forms")
-    for entry_item, entry, action in applicable:
+
+def _phase1_validate_content(
+    file_path: str,
+    applicable: list[tuple[Mapping[str, object], polib.POEntry, str]],
+    *,
+    ctx: ApplyContext,
+    plural_forms: str | None,
+    file_warnings: list[str],
+) -> ApplyFileResult | None:
+    file_errors: list[str] = []
+    for entry_item, entry, _action in applicable:
         translation = entry_item.get("translation")
         msgstr = translation.get("msgstr", "")
         msgstr_plural = translation.get("msgstr_plural", {})
@@ -487,7 +500,47 @@ def _phase1_validate_and_filter(
             break
 
     if file_errors:
-        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, []), []
+        return ApplyFileResult(file_path, False, True, 0, file_errors, file_warnings, [])
+    return None
+
+
+def _phase1_validate_and_filter(
+    file_path: str,
+    plan_items: list,
+    *,
+    ctx: ApplyContext,
+    po_file: polib.POFile,
+    marker_flags: list[str],
+    comment_prefixes: list[str],
+    file_warnings: list[str],
+) -> tuple[ApplyFileResult | None, list[tuple[Mapping[str, object], polib.POEntry, str]]]:
+    entry_map, duplicate_result = _build_entry_map(file_path, po_file)
+    if duplicate_result is not None:
+        return duplicate_result, []
+
+    integrity_result, to_apply = _phase1_integrity_check(
+        file_path,
+        plan_items,
+        ctx=ctx,
+        entry_map=entry_map,
+        marker_flags=marker_flags,
+        comment_prefixes=comment_prefixes,
+        file_warnings=file_warnings,
+    )
+    if integrity_result is not None:
+        return integrity_result, []
+
+    applicable = _phase1_policy_filter(to_apply, ctx=ctx)
+
+    content_result = _phase1_validate_content(
+        file_path,
+        applicable,
+        ctx=ctx,
+        plural_forms=po_file.metadata.get("Plural-Forms"),
+        file_warnings=file_warnings,
+    )
+    if content_result is not None:
+        return content_result, []
 
     return None, applicable
 
@@ -714,19 +767,7 @@ def apply_plan(
         if not file_path:
             path_errors.append("plan file_path is invalid: empty")
             continue
-        if "\\" in file_path:
-            path_errors.append(f"plan file_path is invalid: {file_path}")
-            continue
-        if Path(file_path).is_absolute():
-            path_errors.append(f"plan file_path is invalid: {file_path}")
-            continue
-        if PurePosixPath(file_path).as_posix() != file_path:
-            path_errors.append(f"plan file_path is invalid: {file_path}")
-            continue
-        if "." in PurePosixPath(file_path).parts:
-            path_errors.append(f"plan file_path is invalid: {file_path}")
-            continue
-        if ".." in PurePosixPath(file_path).parts:
+        if not po_utils.is_safe_relative_path(file_path):
             path_errors.append(f"plan file_path is invalid: {file_path}")
             continue
         full_path = (project_root / file_path).resolve()

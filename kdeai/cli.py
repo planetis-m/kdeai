@@ -67,11 +67,18 @@ def _cache_path(project_root: Path, *parts: str) -> Path:
     return project_root / ".kdeai" / "cache" / Path(*parts)
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(kdehash.canonical_json(payload), encoding="utf-8")
-    os.replace(tmp_path, path)
+@contextmanager
+def _atomic_cache_update(project_root: Path, category: str, filename: str):
+    cache_dir = _cache_path(project_root, *Path(category).parts)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    pointer_path = cache_dir / filename
+    tmp_path = pointer_path.with_suffix(pointer_path.suffix + ".tmp")
+    try:
+        yield pointer_path, tmp_path
+        os.replace(tmp_path, pointer_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def _glossary_is_current(
@@ -178,16 +185,6 @@ def get_planner_context(
     )
     path_casefold = bool(project.project_data.get("path_casefold", os.name == "nt"))
     return config, project_id, options, path_casefold
-
-
-
-
-def _parse_lang_from_bytes(po_bytes: bytes) -> Optional[str]:
-    po_file = po_utils.load_po_from_bytes(po_bytes)
-    language = po_file.metadata.get("Language") if po_file else None
-    if language:
-        return str(language).strip()
-    return None
 
 
 def _next_pointer_id(pointer_path: Path, key: str) -> int:
@@ -555,11 +552,8 @@ def index(
             )
             try:
                 locked = snapshot.locked_read_file(path, lock_path, relpath=relpath)
-                lang = _parse_lang_from_bytes(locked.bytes)
-                if not lang:
-                    targets = config.languages.targets
-                    if len(targets) == 1:
-                        lang = str(targets[0])
+                po_file = po_utils.load_po_from_bytes(locked.bytes)
+                lang = po_utils.get_po_language(po_file, config)
                 if not lang:
                     raise ValueError(f"unable to infer language for {relpath}")
                 workspace_tm.index_file_snapshot_tm(
@@ -603,15 +597,17 @@ def reference_build(
         )
     except Exception as exc:
         _exit_with_error(f"Reference build failed: {exc}")
-    pointer_path = (
-        _cache_path(project_root, "reference", "reference.current.json")
-    )
     pointer_payload = {
         "snapshot_id": snapshot.snapshot_id,
         "db_file": snapshot.db_path.name,
         "created_at": snapshot.created_at,
     }
-    _write_json_atomic(pointer_path, pointer_payload)
+    with _atomic_cache_update(
+        project_root,
+        "reference",
+        "reference.current.json",
+    ) as (_pointer_path, tmp_path):
+        tmp_path.write_text(kdehash.canonical_json(pointer_payload), encoding="utf-8")
     typer.echo(f"Reference snapshot {snapshot.snapshot_id} built at {snapshot.db_path}.")
 
 
@@ -750,7 +746,12 @@ def examples_build(
             "embedding_normalization": meta.get("embedding_normalization", ""),
             "source_snapshot": source_snapshot,
         }
-        _write_json_atomic(pointer_path, pointer_payload)
+        with _atomic_cache_update(
+            project_root,
+            f"examples/{from_scope}",
+            pointer_path.name,
+        ) as (_pointer_path, tmp_path):
+            tmp_path.write_text(kdehash.canonical_json(pointer_payload), encoding="utf-8")
         typer.echo(f"Examples DB built for {target_lang} ({from_scope}).")
 
 
@@ -828,7 +829,12 @@ def glossary_build(
             "snapshot_id": reference_snapshot_id,
         },
     }
-    _write_json_atomic(pointer_path, pointer_payload)
+    with _atomic_cache_update(
+        project_root,
+        "glossary",
+        "glossary.current.json",
+    ) as (_pointer_path, tmp_path):
+        tmp_path.write_text(kdehash.canonical_json(pointer_payload), encoding="utf-8")
     typer.echo("Glossary DB built.")
 
 

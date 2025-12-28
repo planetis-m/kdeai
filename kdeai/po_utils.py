@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping, Optional
 import json
 import re
@@ -180,6 +180,31 @@ def normalize_relpath(project_root: Path, path: Path) -> str:
 
 def relpath_key(relpath: str, path_casefold: bool) -> str:
     return relpath.casefold() if path_casefold else relpath
+
+
+def get_po_language(po_file: polib.POFile, config: Config) -> str:
+    language = po_file.metadata.get("Language") if po_file else None
+    if language:
+        return str(language).strip()
+    targets = config.languages.targets
+    if len(targets) == 1:
+        return str(targets[0])
+    return ""
+
+
+def is_safe_relative_path(path: str) -> bool:
+    if not path:
+        return False
+    if "\\" in path:
+        return False
+    pure_path = PurePosixPath(path)
+    if pure_path.is_absolute():
+        return False
+    if pure_path.as_posix() != path:
+        return False
+    if "." in pure_path.parts or ".." in pure_path.parts:
+        return False
+    return True
 
 
 def read_json(path: Path, label: str) -> dict:
