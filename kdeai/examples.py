@@ -82,21 +82,14 @@ class PendingExample:
     file_sha256: str
 
 
-def _review_rank(order: Sequence[str]) -> dict[str, int]:
-    return {status: idx for idx, status in enumerate(order)}
-
-
-def _review_eligible(
-    review_status: str,
-    *,
+def allowed_review_statuses(
     min_review_status: str,
-    review_order: Sequence[str],
-) -> bool:
-    order_rank = _review_rank(review_order)
-    if min_review_status not in order_rank:
+    order: Sequence[str],
+) -> list[str]:
+    if min_review_status not in order:
         raise ValueError("min_review_status not present in tm.selection.review_status_order")
-    candidate_rank = order_rank.get(review_status, len(review_order))
-    return candidate_rank <= order_rank[min_review_status]
+    cutoff = order.index(min_review_status)
+    return list(order[: cutoff + 1])
 
 
 def _iter_workspace_rows(conn: sqlite3.Connection, lang: str):
@@ -140,6 +133,29 @@ def _pack_embedding(
     return struct.pack(fmt, *floats)
 
 
+def encode_embedding_to_blob(
+    values: Sequence[float],
+    *,
+    embedding_dim: int,
+    embedding_normalization: str,
+    require_finite: bool,
+) -> bytes:
+    if len(values) != embedding_dim:
+        raise ValueError(f"embedding dim mismatch: expected {embedding_dim}, got {len(values)}")
+    normalized = normalize_embedding(values, embedding_normalization)
+    blob = _pack_embedding(
+        normalized,
+        embedding_dim=embedding_dim,
+        require_finite=require_finite,
+    )
+    expected_len = 4 * embedding_dim
+    if len(blob) != expected_len:
+        raise ValueError(
+            f"embedding blob length mismatch: expected {expected_len}, got {len(blob)}"
+        )
+    return blob
+
+
 def _build_examples_rows(
     rows: Iterable[Sequence[object]],
     *,
@@ -154,6 +170,7 @@ def _build_examples_rows(
     review_order = list(config.tm.selection.review_status_order)
     _, _, _, eligibility = config.examples_runtime_settings()
     min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
+    allowed_statuses = allowed_review_statuses(min_review_status, review_order)
     allow_ai_generated = bool(eligibility.allow_ai_generated)
     candidates: list[PendingExample] = []
     for row in rows:
@@ -170,11 +187,7 @@ def _build_examples_rows(
 
         if not source_text.strip():
             continue
-        if not _review_eligible(
-            review_status,
-            min_review_status=min_review_status,
-            review_order=review_order,
-        ):
+        if review_status not in allowed_statuses:
             continue
         if not allow_ai_generated and is_ai_generated:
             continue
@@ -206,10 +219,10 @@ def _build_examples_rows(
 
     payload: list[ExampleRow] = []
     for row, embedding in zip(candidates, embeddings):
-        normalized = normalize_embedding(embedding, embedding_normalization)
-        blob = _pack_embedding(
-            normalized,
+        blob = encode_embedding_to_blob(
+            embedding,
             embedding_dim=embedding_dim,
+            embedding_normalization=embedding_normalization,
             require_finite=require_finite,
         )
         payload.append(
@@ -583,20 +596,9 @@ def _vector_query_sql(
         "JOIN vector_quantize_scan('examples', 'embedding', ?, ?) v "
         "ON e.id = v.rowid "
         f"{where_clause} "
-        "ORDER BY v.distance, e.source_key, e.translation_hash, e.file_path, e.file_sha256"
+        "ORDER BY v.distance, e.source_key, e.translation_hash, e.file_path, e.file_sha256 "
+        "LIMIT ?"
     )
-
-
-def _eligible_review_statuses(
-    eligibility: ExamplesEligibility,
-    review_status_order: Sequence[str],
-) -> list[str]:
-    min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
-    order = list(review_status_order)
-    if min_review_status not in order:
-        raise ValueError("min_review_status not present in tm.selection.review_status_order")
-    cutoff = order.index(min_review_status)
-    return order[: cutoff + 1]
 
 
 def query_examples(
@@ -615,10 +617,10 @@ def query_examples(
         if len(blob) != 4 * db.embedding_dim:
             raise ValueError("query embedding blob length mismatch")
     else:
-        normalized = normalize_embedding(query_embedding, db.embedding_normalization)
-        blob = _pack_embedding(
-            normalized,
+        blob = encode_embedding_to_blob(
+            query_embedding,
             embedding_dim=db.embedding_dim,
+            embedding_normalization=db.embedding_normalization,
             require_finite=db.require_finite,
         )
 
@@ -627,7 +629,8 @@ def query_examples(
     if eligibility is not None:
         if review_status_order is None:
             raise ValueError("review_status_order required when eligibility is provided")
-        review_statuses = _eligible_review_statuses(eligibility, review_status_order)
+        min_review_status = str(eligibility.min_review_status or DEFAULT_MIN_REVIEW_STATUS)
+        review_statuses = allowed_review_statuses(min_review_status, review_status_order)
         allow_ai_generated = bool(eligibility.allow_ai_generated)
 
     sql = _vector_query_sql(
@@ -647,9 +650,10 @@ def query_examples(
         params.append(lang)
     if review_statuses:
         params.extend(review_statuses)
+    params.append(int(top_n))
 
     try:
-        rows = db.conn.execute(sql, params).fetchall()[:top_n]
+        rows = db.conn.execute(sql, params).fetchall()
     except Exception as exc:
         raise RuntimeError("sqlite-vector unavailable for examples") from exc
     matches: list[ExampleMatch] = []

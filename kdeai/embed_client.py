@@ -3,12 +3,10 @@ from __future__ import annotations
 from typing import Iterable, Sequence
 import os
 
-import dspy
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from kdeai.config import EmbeddingPolicy
-from kdeai.math_utils import normalize_embedding
 
 load_dotenv()
 
@@ -54,7 +52,6 @@ def _openai_embed(
 ) -> list[list[float]]:
     client = _get_client()
     model_id = policy.model_id
-    normalization = policy.normalization
     target_dim = policy.dim
     request_kwargs = {}
     if target_dim is not None:
@@ -65,21 +62,19 @@ def _openai_embed(
         **request_kwargs,
     )
     data = _embedding_response_data(response)
+    if len(data) != len(texts):
+        raise RuntimeError("embedding response length mismatch")
     embeddings: list[list[float]] = []
     for item in data:
         values = _extract_embedding(item)
-        if len(values) != target_dim:
+        if target_dim is not None and len(values) != target_dim:
             if len(values) < target_dim:
                 raise ValueError(
                     f"embedding dim mismatch: expected {target_dim}, got {len(values)}"
                 )
             values = values[:target_dim]
-        embeddings.append(normalize_embedding(values, normalization))
+        embeddings.append(values)
     return embeddings
-
-
-def _get_embedder(policy: EmbeddingPolicy) -> dspy.Embedder:
-    return dspy.Embedder(lambda texts: _openai_embed(texts, policy=policy))
 
 
 def compute_embeddings(
@@ -87,13 +82,30 @@ def compute_embeddings(
     *,
     policy: EmbeddingPolicy,
 ) -> list[list[float]]:
-    embedder = _get_embedder(policy)
-    embeddings = embedder(list(texts))
-    if hasattr(embeddings, "tolist"):
-        embeddings = embeddings.tolist()
-    if isinstance(embeddings, Iterable):
-        return [list(row) for row in embeddings]
-    raise TypeError("embedder returned unexpected embedding type")
+    if not isinstance(texts, Sequence):
+        raise TypeError("texts must be a sequence")
+    if not texts:
+        return []
+    embeddings = _openai_embed(texts, policy=policy)
+    if not isinstance(embeddings, Iterable):
+        raise TypeError("embedding response is not iterable")
+    rows = [list(row) for row in embeddings]
+    if len(rows) != len(texts):
+        raise RuntimeError("embedder returned unexpected number of embeddings")
+    target_dim = policy.dim
+    if target_dim is not None:
+        trimmed_rows: list[list[float]] = []
+        for row in rows:
+            values = [float(value) for value in row]
+            if len(values) != target_dim:
+                if len(values) < target_dim:
+                    raise ValueError(
+                        f"embedding dim mismatch: expected {target_dim}, got {len(values)}"
+                    )
+                values = values[:target_dim]
+            trimmed_rows.append(values)
+        return trimmed_rows
+    return [[float(value) for value in row] for row in rows]
 
 
 def compute_embedding(

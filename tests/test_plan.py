@@ -34,6 +34,18 @@ class TestBuildAssetsExamples(unittest.TestCase):
         self.assertIsNone(assets.examples_db)
 
 
+class TestRequireEmbedder(unittest.TestCase):
+    def test_require_embedder_batches_embeddings(self):
+        config = build_config()
+        policy = config.prompt.examples.embedding_policy
+        with mock.patch("kdeai.embed_client.compute_embeddings") as compute_mock:
+            compute_mock.return_value = [[0.1, 0.2], [0.3, 0.4]]
+            embedder = kdeplan.require_embedder(policy)
+            result = embedder(["Hello", "World"])
+        compute_mock.assert_called_once_with(["Hello", "World"], policy=policy)
+        self.assertEqual(len(result), 2)
+
+
 class TestCollectExamples(unittest.TestCase):
     def test_embedder_exception_auto_returns_empty(self):
         def embedder(_texts):

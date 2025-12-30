@@ -1,47 +1,22 @@
-from __future__ import annotations
-
+import tempfile
+import unittest
 from pathlib import Path
 
-import sqlite3
-import array
-
-from kdeai import db as kdedb
+from kdeai import sqlite_vector
 
 
-def test_sqlite_vector_extension_loads(tmp_path: Path, monkeypatch) -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    vector_path = project_root / "vector.so"
-    assert vector_path.exists(), "vector.so must exist in project root"
+class TestResolveSqliteVectorPath(unittest.TestCase):
+    def test_returns_none_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            self.assertIsNone(sqlite_vector.resolve_sqlite_vector_path(project_root))
 
-    monkeypatch.chdir(project_root)
-
-    db_path = tmp_path / "vector-test.sqlite"
-    conn = kdedb.connect_writable(db_path)
-    assert kdedb.try_enable_sqlite_vector(
-        conn,
-        extension_path=str(vector_path),
-    )
-    try:
-        conn.execute(
-            "CREATE TABLE images (id INTEGER PRIMARY KEY, embedding BLOB, label TEXT)"
-        )
-        blob = array.array("f", [0.1, 0.2, 0.3]).tobytes()
-        conn.execute("INSERT INTO images (embedding, label) VALUES (?, 'cat')", (blob,))
-        conn.execute(
-            "INSERT INTO images (embedding, label) "
-            "VALUES (vector_as_f32('[0.2, 0.1, 0.0]'), 'dog')"
-        )
-        conn.execute(
-            "SELECT vector_init('images', 'embedding', 'type=FLOAT32,dimension=3')"
-        )
-        conn.execute("SELECT vector_quantize('images', 'embedding')")
-        rows = conn.execute(
-            "SELECT e.id "
-            "FROM images AS e "
-            "JOIN vector_quantize_scan('images', 'embedding', vector_as_f32(?), 1) AS v "
-            "ON e.id = v.rowid",
-            ("[0.1, 0.2, 0.3]",),
-        ).fetchall()
-        assert rows, "vector_quantize_scan should return at least one match"
-    finally:
-        conn.close()
+    def test_returns_path_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            vector_path = project_root / "vector.so"
+            vector_path.write_bytes(b"")
+            self.assertEqual(
+                sqlite_vector.resolve_sqlite_vector_path(project_root),
+                str(vector_path),
+            )

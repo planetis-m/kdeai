@@ -19,6 +19,7 @@ from kdeai import locks
 from kdeai import po_model
 from kdeai import retrieve_examples
 from kdeai import retrieve_tm
+from kdeai import sqlite_vector as kdesqlite_vector
 from kdeai import snapshot
 from kdeai import po_utils
 from kdeai.constants import (
@@ -83,10 +84,10 @@ def glossary_mode_from_config(
 
 
 def require_embedder(policy: EmbeddingPolicy) -> kdeexamples.EmbeddingFunc:
-    from kdeai.embed_client import compute_embedding
+    from kdeai.embed_client import compute_embeddings
 
     def _embed(texts: Sequence[str]) -> list[list[float]]:
-        return [compute_embedding(text, policy=policy) for text in texts]
+        return compute_embeddings(texts, policy=policy)
 
     return _embed
 
@@ -130,9 +131,7 @@ def resolve_planner_inputs(
     )
     sqlite_vector_path = None
     if resolved_examples_mode != AssetMode.OFF:
-        candidate = project_root / "vector.so"
-        if candidate.exists():
-            sqlite_vector_path = str(candidate)
+        sqlite_vector_path = kdesqlite_vector.resolve_sqlite_vector_path(project_root)
     return resolved_examples_mode, resolved_glossary_mode, embedder, sqlite_vector_path
 
 

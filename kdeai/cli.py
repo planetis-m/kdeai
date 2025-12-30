@@ -28,6 +28,7 @@ from kdeai import plan as kdeplan
 from kdeai import po_utils
 from kdeai import reference as kderef
 from kdeai import snapshot
+from kdeai import sqlite_vector as kdesqlite_vector
 from kdeai import workspace_tm
 from kdeai.constants import (
     ApplyModeLiteral,
@@ -178,7 +179,6 @@ def get_planner_context(
     examples: Optional[AssetModeLiteral],
     glossary: Optional[AssetModeLiteral],
 ) -> tuple[Config, str, kdeplan.PlannerOptions, bool]:
-    _ensure_project(state, command_name)
     config = state.config
     project_id = state.project_id
     project_root = state.root
@@ -218,13 +218,6 @@ def _next_pointer_id(pointer_path: Path, key: str) -> int:
     except (OSError, ValueError):
         pointer_id = 0
     return pointer_id + 1
-
-
-def _sqlite_vector_path(project_root: Path) -> str | None:
-    candidate = project_root / "vector.so"
-    if candidate.exists():
-        return str(candidate)
-    return None
 
 
 def _note_cache_write_noop(command_name: str) -> None:
@@ -415,7 +408,6 @@ def apply(
     project_root = state.root
     plan = kdeplan.load_plan(plan_path)
     post_index_flag = post_index == PostIndex.ON
-    _ensure_project(state, "Apply")
     config = state.config
     project_id = state.project_id
     path_casefold = bool(state.path_casefold)
@@ -562,7 +554,6 @@ def index(
 ) -> None:
     state = _require_state(ctx)
     project_root = state.root
-    _ensure_project(state, "Index")
     config = state.config
     project_id = state.project_id
     path_casefold = bool(state.path_casefold)
@@ -614,7 +605,6 @@ def reference_build(
 ) -> None:
     state = _require_state(ctx)
     project_root = state.root
-    _ensure_project(state, "Reference build")
     config = state.config
     project_id = state.project_id
     try:
@@ -652,7 +642,6 @@ def examples_build(
 ) -> None:
     state = _require_state(ctx)
     project_root = state.root
-    _ensure_project(state, "Examples build")
     config = state.config
     project_id = state.project_id
 
@@ -664,7 +653,7 @@ def examples_build(
     else:
         languages = [lang]
 
-    sqlite_vector_path = _sqlite_vector_path(project_root)
+    sqlite_vector_path = kdesqlite_vector.resolve_sqlite_vector_path(project_root)
     if sqlite_vector_path is None:
         _exit_with_error(
             "Examples build failed: sqlite-vector extension not found at ./vector.so"
@@ -795,7 +784,6 @@ def glossary_build(
 ) -> None:
     state = _require_state(ctx)
     project_root = state.root
-    _ensure_project(state, "Glossary build")
     config = state.config
     project_id = state.project_id
     pointer_path = _cache_path(project_root, "glossary", "glossary.current.json")
@@ -897,7 +885,6 @@ def gc(
 ) -> None:
     state = _require_state(ctx)
     project_root = state.root
-    _ensure_project(state, "GC")
     config = state.config
     project_id = state.project_id
     try:

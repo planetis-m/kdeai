@@ -1,5 +1,6 @@
 import math
 import sqlite3
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -74,6 +75,16 @@ def _example_meta(
 
 
 class TestExamplesEligibility(unittest.TestCase):
+    def test_allowed_review_statuses_prefix(self):
+        self.assertEqual(
+            examples.allowed_review_statuses("reviewed", ["reviewed", "draft"]),
+            ["reviewed"],
+        )
+
+    def test_allowed_review_statuses_invalid_min_raises(self):
+        with self.assertRaises(ValueError):
+            examples.allowed_review_statuses("approved", ["reviewed", "draft"])
+
     def test_singular_requires_non_empty(self):
         config = _base_config()
         rows = [
@@ -125,6 +136,68 @@ class TestQueryExamples(unittest.TestCase):
         )
         self.assertEqual(result, [])
         db.conn.execute.assert_not_called()
+
+    def test_query_examples_passes_scan_limit_and_top_n(self):
+        conn = mock.Mock()
+        conn.execute.return_value.fetchall.return_value = [
+            (
+                "key1",
+                "ctx:\nid:Hello\npl:",
+                "de",
+                "Hallo",
+                "{}",
+                "reviewed",
+                0,
+                "hash",
+                "file.po",
+                "",
+                0.1,
+            ),
+            (
+                "key2",
+                "ctx:\nid:World\npl:",
+                "de",
+                "Welt",
+                "{}",
+                "reviewed",
+                0,
+                "hash2",
+                "file.po",
+                "",
+                0.2,
+            ),
+            (
+                "key3",
+                "ctx:\nid:Test\npl:",
+                "de",
+                "Test",
+                "{}",
+                "reviewed",
+                0,
+                "hash3",
+                "file.po",
+                "",
+                0.3,
+            ),
+        ]
+        db = examples.ExamplesDb(
+            conn=conn,
+            meta={},
+            embedding_dim=2,
+            embedding_distance="cosine",
+            vector_encoding="float32_le",
+            embedding_normalization="none",
+            require_finite=True,
+        )
+        result = examples.query_examples(
+            db,
+            query_embedding=b"\x00" * 8,
+            top_n=3,
+        )
+        self.assertEqual(len(result), 3)
+        params = conn.execute.call_args[0][1]
+        self.assertEqual(params[1], 3)
+        self.assertEqual(params[-1], 3)
 
     def test_plural_accepts_any_non_empty_form(self):
         config = _base_config()
@@ -191,6 +264,50 @@ class TestQueryExamples(unittest.TestCase):
             include_file_sha256=False,
         )
         self.assertEqual(payload, [])
+
+    def test_review_status_allows_prefix(self):
+        config = _base_config(min_review_status="reviewed")
+        rows = [
+            (
+                "key1",
+                "ctx:\nid:Hello\npl:",
+                "",
+                "de",
+                "Hallo",
+                "{}",
+                "reviewed",
+                0,
+                "hash",
+                "file.po",
+            ),
+            (
+                "key2",
+                "ctx:\nid:Hello\npl:",
+                "",
+                "de",
+                "Hallo",
+                "{}",
+                "draft",
+                0,
+                "hash2",
+                "file.po",
+            ),
+        ]
+
+        def embedder(texts):
+            return [[0.1, 0.2] for _ in texts]
+
+        payload = examples._build_examples_rows(
+            rows,
+            lang="de",
+            config=config,
+            embedder=embedder,
+            embedding_dim=2,
+            embedding_normalization="none",
+            require_finite=True,
+            include_file_sha256=False,
+        )
+        self.assertEqual(len(payload), 1)
 
     def test_ai_generated_filtering(self):
         config = _base_config(allow_ai_generated=False)
@@ -348,27 +465,62 @@ class TestQueryExamples(unittest.TestCase):
         )
 
 
-class TestEmbeddingPacking(unittest.TestCase):
-    def test_pack_embedding_rejects_non_finite(self):
+class TestEmbeddingEncoding(unittest.TestCase):
+    def test_encode_embedding_rejects_non_finite(self):
         with self.assertRaises(ValueError):
-            examples._pack_embedding(
+            examples.encode_embedding_to_blob(
                 [1.0, math.nan],
                 embedding_dim=2,
+                embedding_normalization="none",
+                require_finite=True,
+            )
+        with self.assertRaises(ValueError):
+            examples.encode_embedding_to_blob(
+                [1.0, math.inf],
+                embedding_dim=2,
+                embedding_normalization="none",
                 require_finite=True,
             )
 
-    def test_pack_embedding_length_mismatch(self):
+    def test_encode_embedding_length_mismatch(self):
         with self.assertRaises(ValueError):
-            examples._pack_embedding(
+            examples.encode_embedding_to_blob(
                 [1.0],
                 embedding_dim=2,
+                embedding_normalization="none",
                 require_finite=True,
             )
 
-    def test_normalize_embedding_l2(self):
-        normalized = examples.normalize_embedding([3.0, 4.0], "l2_normalize")
-        self.assertAlmostEqual(normalized[0], 0.6, places=6)
-        self.assertAlmostEqual(normalized[1], 0.8, places=6)
+    def test_encode_embedding_blob_length(self):
+        blob = examples.encode_embedding_to_blob(
+            [1.0, 2.0],
+            embedding_dim=2,
+            embedding_normalization="none",
+            require_finite=True,
+        )
+        self.assertEqual(len(blob), 8)
+
+    def test_encode_embedding_none_preserves_values(self):
+        blob = examples.encode_embedding_to_blob(
+            [3.0, 4.0],
+            embedding_dim=2,
+            embedding_normalization="none",
+            require_finite=True,
+        )
+        values = struct.unpack("<2f", blob)
+        self.assertAlmostEqual(values[0], 3.0, places=6)
+        self.assertAlmostEqual(values[1], 4.0, places=6)
+
+    def test_encode_embedding_l2_normalizes(self):
+        blob = examples.encode_embedding_to_blob(
+            [3.0, 4.0],
+            embedding_dim=2,
+            embedding_normalization="l2_normalize",
+            require_finite=True,
+        )
+        values = struct.unpack("<2f", blob)
+        norm = math.sqrt(sum(value * value for value in values))
+        self.assertAlmostEqual(norm, 1.0, places=6)
 
 
 class TestQueryExamples(unittest.TestCase):
