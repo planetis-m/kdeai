@@ -7,7 +7,6 @@ from typing import Callable, Iterable, Mapping, Sequence
 import math
 import sqlite3
 import struct
-import sys
 
 from kdeai import db as kdedb
 from kdeai.config import Config
@@ -19,6 +18,7 @@ from kdeai.constants import (
 )
 from kdeai.math_utils import normalize_embedding
 from kdeai.po_utils import is_translation_non_empty, parse_msgstr_plural
+from kdeai import sqlite_vector as kdesqlite_vector
 
 
 DEFAULT_MIN_REVIEW_STATUS = ReviewStatus.REVIEWED
@@ -140,20 +140,12 @@ def encode_embedding_to_blob(
     embedding_normalization: str,
     require_finite: bool,
 ) -> bytes:
-    if len(values) != embedding_dim:
-        raise ValueError(f"embedding dim mismatch: expected {embedding_dim}, got {len(values)}")
     normalized = normalize_embedding(values, embedding_normalization)
-    blob = _pack_embedding(
+    return _pack_embedding(
         normalized,
         embedding_dim=embedding_dim,
         require_finite=require_finite,
     )
-    expected_len = 4 * embedding_dim
-    if len(blob) != expected_len:
-        raise ValueError(
-            f"embedding blob length mismatch: expected {expected_len}, got {len(blob)}"
-        )
-    return blob
 
 
 def _build_examples_rows(
@@ -349,7 +341,9 @@ def _build_examples_db(
 
         if not sqlite_vector_path:
             raise ValueError("sqlite-vector extension path is required to build examples")
-        if not kdedb.try_enable_sqlite_vector(conn, extension_path=sqlite_vector_path):
+        if not kdesqlite_vector.enable_sqlite_vector(
+            conn, extension_path=sqlite_vector_path
+        ):
             raise RuntimeError(
                 f"failed to load sqlite-vector extension at {sqlite_vector_path}"
             )
@@ -493,7 +487,9 @@ def open_examples_db(
         _validate_examples_meta(meta)
         if sqlite_vector_path is None:
             raise RuntimeError("sqlite-vector unavailable")
-        if not kdedb.try_enable_sqlite_vector(conn, extension_path=sqlite_vector_path):
+        if not kdesqlite_vector.enable_sqlite_vector(
+            conn, extension_path=sqlite_vector_path
+        ):
             raise RuntimeError(
                 f"failed to load sqlite-vector extension at {sqlite_vector_path}"
             )

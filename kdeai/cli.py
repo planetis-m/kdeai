@@ -179,8 +179,13 @@ def get_planner_context(
     examples: Optional[AssetModeLiteral],
     glossary: Optional[AssetModeLiteral],
 ) -> tuple[Config, str, kdeplan.PlannerOptions, bool]:
+    _ensure_project(state, command_name)
     config = state.config
     project_id = state.project_id
+    if config is None:
+        raise RuntimeError("config not initialized")
+    if project_id is None:
+        raise RuntimeError("project_id not initialized")
     project_root = state.root
     cache_mode = cache or CacheMode.ON
     cache_write_flag = cache_write or CacheMode.ON
